@@ -55,7 +55,66 @@ export function agentFromPlaygroundPeer(peerJid: string): string | null {
 }
 
 /** Human label for a peer in the sessions list. */
+/**
+ * The chat adapter hands us `<adapterName>:<base64 of the real JID>`, so the
+ * JID is not readable until it is unwrapped. Everything downstream — the label
+ * in a trace, the phone number the agent is told — depends on getting the real
+ * one back, and a peer that stayed wrapped silently looked like a playground
+ * peer instead of a person.
+ */
+export function decodePeerJid(peerJid: string): string {
+  if (peerJid.includes("@")) return peerJid
+  const encoded = peerJid.slice(peerJid.indexOf(":") + 1)
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) return peerJid
+  try {
+    const decoded = Buffer.from(encoded, "base64").toString("utf8")
+    return decoded.includes("@") ? decoded : peerJid
+  } catch {
+    return peerJid
+  }
+}
+
+/**
+ * The peer's phone number, or null when we genuinely do not have one.
+ *
+ * Null is the important case. WhatsApp increasingly identifies people by a
+ * `@lid` — a privacy identifier that is *not* a phone number and cannot be
+ * turned into one here. Returning a best guess would put a number that reaches
+ * nobody onto a patient's record, so a caller that cannot be identified has to
+ * be reported as exactly that.
+ */
+export function peerPhone(peerJid: string): string | null {
+  const jid = decodePeerJid(peerJid)
+  if (!jid.endsWith("@s.whatsapp.net")) return null
+  const number = jid.split("@", 1)[0]?.split(":", 1)[0] ?? ""
+  return /^\d{7,15}$/.test(number) ? `+${number}` : null
+}
+
+/**
+ * A stable contact key for this peer, for the hospital record.
+ *
+ * A phone number when the platform gives one, otherwise `wa:<lid>` — which is
+ * not dialable but *is* how you reach this person, since it is the identity
+ * they are messaging from. The point is that it always comes from the channel:
+ * the alternative is asking the model, which answers with a fake number when it
+ * does not know.
+ */
+export function patientContact(peerJid: string): string {
+  const phone = peerPhone(peerJid)
+  if (phone) return phone
+  const jid = decodePeerJid(peerJid)
+  if (jid.endsWith("@lid")) return `wa:${jid.slice(0, -"@lid".length)}`
+  return `peer:${jid.replace(/[^A-Za-z0-9:_-]/g, "-")}`
+}
+
 export function peerLabel(peerJid: string): string {
+  peerJid = decodePeerJid(peerJid)
+  // A `@lid` is digits, but it is not a phone number. Formatting it as `+…`
+  // would put something that looks dialable in front of whoever is reading the
+  // session list, so say what it actually is.
+  if (peerJid.endsWith("@lid")) {
+    return `${peerJid.slice(0, -"@lid".length)} (WhatsApp id)`
+  }
   if (peerJid.includes("@")) {
     const number = peerJid.split("@", 1)[0]?.split(":", 1)[0] ?? peerJid
     return /^\d+$/.test(number) ? `+${number}` : number

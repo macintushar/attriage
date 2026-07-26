@@ -78,12 +78,14 @@ export function channelStatus(channelId: string): ChannelStatus {
  */
 export function routeInbound(
   channel: ChannelRecord,
-  peerJid: string
+  peerJid: string,
+  peerName?: string | null
 ): { session: SessionRecord; agentId: string | null; created: boolean } {
   const { session, created } = ensureSessionRow(
     channel.id,
     peerJid,
-    channel.defaultAgentId
+    channel.defaultAgentId,
+    { peerName }
   )
   return { session, agentId: resolveAgentId(session, channel), created }
 }
@@ -176,7 +178,13 @@ export async function connectChannel(channelId: string): Promise<void> {
     if (!current) return
 
     const peerJid = thread.id
-    const { session, agentId, created } = routeInbound(current, peerJid)
+    // WhatsApp's push name: what the sender calls themselves on their own
+    // phone. Refreshed every message, since people rename themselves.
+    const { session, agentId, created } = routeInbound(
+      current,
+      peerJid,
+      message.author.fullName
+    )
     log.info("channel.message.received", {
       channelId,
       sessionId: session.id,

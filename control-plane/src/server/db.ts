@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   id           TEXT PRIMARY KEY,
   channelId    TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   peerJid      TEXT NOT NULL,
+  peerName     TEXT,
   agentId      TEXT REFERENCES agents(id) ON DELETE SET NULL,
   agentPinned  INTEGER NOT NULL DEFAULT 0,
   workdir      TEXT NOT NULL,
@@ -312,6 +313,10 @@ ensureColumn("agents", "ttsSpeaker", "TEXT NOT NULL DEFAULT 'shubh'")
 // Voice-note length, measured from the audio. Null for text and for a voice
 // note recorded before this column existed — `backfillAudioDurations` fills those.
 ensureColumn("messages", "audioSeconds", "REAL")
+// The peer's WhatsApp display name. Null for playground peers and for sessions
+// that started before this column existed; the next message from that peer
+// fills it in.
+ensureColumn("sessions", "peerName", "TEXT")
 // An agent is no longer bound to one channel; channels choose agents now.
 dropColumn("agents", "channel")
 ensurePlaygroundChannel()
@@ -606,6 +611,7 @@ interface SessionRow {
   id: string
   channelId: string
   peerJid: string
+  peerName: string | null
   agentId: string | null
   agentPinned: number
   workdir: string
@@ -681,10 +687,23 @@ export function ensureSessionRow(
   channelId: string,
   peerJid: string,
   agentId: string | null,
-  options: { pinned?: boolean } = {}
+  options: { pinned?: boolean; peerName?: string | null } = {}
 ): { session: SessionRecord; created: boolean } {
   const existing = findSession(channelId, peerJid)
-  if (existing) return { session: existing, created: false }
+  if (existing) {
+    // People rename themselves on WhatsApp, so the name is refreshed rather
+    // than frozen at session creation. Only on a real change: this runs on
+    // every inbound message.
+    const name = options.peerName?.trim() || null
+    if (name && name !== existing.peerName) {
+      query(`UPDATE sessions SET peerName = ? WHERE id = ?`).run(
+        name,
+        existing.id
+      )
+      existing.peerName = name
+    }
+    return { session: existing, created: false }
+  }
 
   const id = deriveSessionId(channelId, peerJid)
   const now = Date.now()
@@ -692,6 +711,7 @@ export function ensureSessionRow(
     id,
     channelId,
     peerJid,
+    peerName: options.peerName?.trim() || null,
     agentId,
     agentPinned: options.pinned ?? false,
     workdir: paths.sessionDir(id),
@@ -702,12 +722,13 @@ export function ensureSessionRow(
   }
   query(
     `INSERT INTO sessions
-       (id, channelId, peerJid, agentId, agentPinned, workdir, containerId, status, createdAt, lastActiveAt)
-     VALUES (?, ?, ?, ?, ?, ?, NULL, 'idle', ?, ?)`
+       (id, channelId, peerJid, peerName, agentId, agentPinned, workdir, containerId, status, createdAt, lastActiveAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'idle', ?, ?)`
   ).run(
     session.id,
     session.channelId,
     session.peerJid,
+    session.peerName,
     session.agentId,
     session.agentPinned ? 1 : 0,
     session.workdir,

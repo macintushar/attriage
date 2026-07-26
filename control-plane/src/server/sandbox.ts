@@ -5,6 +5,7 @@ import type { Readable } from "node:stream"
 
 import { env } from "./env"
 import { getConnectors, staleSessions, touchSession } from "./db"
+import { patientContact } from "./routing"
 import type { AgentRecord, SessionRecord } from "./types"
 import { log } from "./logger"
 
@@ -119,6 +120,14 @@ export async function ensureContainer(
     // commands, so anything in its env is readable by the model. It reaches
     // Sarvam through the backend's shim instead.
     ...credentialEnvArgs(agent.id),
+    // Who the patient is, taken from the channel rather than from the model.
+    // Told to supply a phone number it was never given, the model invents a
+    // plausible one — first the placeholder from its own skill file, then, once
+    // that was blocked, a different fake that evaded the block. Identity is not
+    // something to ask a language model for, so `hms` reads it from here and
+    // ignores whatever the agent types.
+    "-e",
+    `HMS_PATIENT_CONTACT=${patientContact(session.peerJid)}`,
     // Lets the sandbox reach a model server on the host. Docker Desktop
     // provides this name already; the explicit mapping keeps Linux working.
     "--add-host",

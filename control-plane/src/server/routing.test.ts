@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   agentFromPlaygroundPeer,
   peerLabel,
+  peerPhone,
   playgroundPeer,
   resolveAgentId,
   sessionId,
@@ -94,5 +95,30 @@ describe("peerLabel", () => {
 
   it("leaves a peer it doesn't recognise alone", () => {
     expect(peerLabel("something-else")).toBe("something-else")
+  })
+})
+
+describe("peer identity from a wrapped adapter id", () => {
+  const wrap = (jid: string) =>
+    `channel-hospital-intake:${Buffer.from(jid).toString("base64")}`
+
+  it("recovers a phone number from the adapter's base64 peer id", () => {
+    expect(peerPhone(wrap("919845012345@s.whatsapp.net"))).toBe("+919845012345")
+    expect(peerLabel(wrap("919845012345@s.whatsapp.net"))).toBe("+919845012345")
+  })
+
+  it("refuses to turn a @lid into a phone number", () => {
+    // A LID is WhatsApp's privacy identifier. It is all digits and it is not
+    // dialable; treating it as a number would write a dead contact to a record.
+    expect(peerPhone(wrap("54623528321265@lid"))).toBeNull()
+    expect(peerLabel(wrap("54623528321265@lid"))).toBe(
+      "54623528321265 (WhatsApp id)"
+    )
+  })
+
+  it("leaves playground peers and undecodable ids alone", () => {
+    expect(peerPhone("cli:patient-intake")).toBeNull()
+    expect(peerLabel("cli:patient-intake")).toBe("patient-intake (cli)")
+    expect(peerPhone("wa:not-base64!!")).toBeNull()
   })
 })

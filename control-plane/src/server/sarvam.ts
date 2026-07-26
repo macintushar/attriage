@@ -310,6 +310,41 @@ export function ttsLanguage(code: string | null | undefined): string {
 }
 
 /**
+ * Markdown is written to be seen, and TTS reads it out literally: `**Dr. Rao**`
+ * becomes "asterisk asterisk Dr. Rao". The prompt already tells voice agents not
+ * to format, but a model reaching for emphasis on an important detail is exactly
+ * the failure a patient hears, so strip it on the way to the speaker rather than
+ * trusting instructions alone. Text replies keep their formatting.
+ */
+export function speakableText(text: string): string {
+  return (
+    text
+      // Fenced and inline code: keep the contents, drop the delimiters.
+      .replace(/```[a-zA-Z0-9]*\n?([\s\S]*?)```/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      // Links and images become their label; a bare URL is unspeakable.
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      // Emphasis, in the order that keeps ***both*** intact.
+      .replace(/(\*\*\*|___)(.+?)\1/g, "$2")
+      .replace(/(\*\*|__)(.+?)\1/g, "$2")
+      .replace(/(?<![*\w])\*(?!\s)([^*]+?)(?<!\s)\*(?!\*)/g, "$1")
+      // Leading structure: headings, quotes, and bullets, which otherwise get
+      // read as "hash hash" or "hyphen".
+      .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+      .replace(/^\s{0,3}>\s?/gm, "")
+      .replace(/^\s{0,3}[-*+]\s+/gm, "")
+      // A numbered list is read naturally, so keep the number and drop the dot
+      // only when it would be heard as punctuation mid-sentence.
+      .replace(/^\s{0,3}(\d+)[.)]\s+/gm, "$1. ")
+      // Horizontal rules have no spoken form at all.
+      .replace(/^\s{0,3}([-*_])\s*(?:\1\s*){2,}$/gm, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim()
+  )
+}
+
+/**
  * Returns ogg/opus, which is what WhatsApp wants — no ffmpeg on the outbound
  * leg either. Long replies are chunked and concatenated.
  */
@@ -318,9 +353,10 @@ export async function speak(
   language: string,
   speaker = "shubh"
 ): Promise<Buffer> {
+  const spoken = speakableText(text)
   const chunks: string[] = []
-  for (let i = 0; i < text.length; i += TTS_MAX_CHARS) {
-    chunks.push(text.slice(i, i + TTS_MAX_CHARS))
+  for (let i = 0; i < spoken.length; i += TTS_MAX_CHARS) {
+    chunks.push(spoken.slice(i, i + TTS_MAX_CHARS))
   }
 
   const buffers: Buffer[] = []

@@ -42,15 +42,20 @@ const config = process.env.HMS_CONFIG
 const GOAL = process.env.AGENT_GOAL ?? `Take a new patient through intake, end to end:
 
 1. Greet them warmly and say you'll help them get an appointment.
-2. Collect, one question at a time: full name, age, sex, and contact number.
+2. Collect, one question at a time: full name, age and sex. Never ask for a
+   phone number and never type one into a command — \`hms\` fills in their contact
+   details from the channel. If their WhatsApp display name reads like a personal
+   name, confirm it ("Is this appointment for <name>?") instead of asking cold.
 3. Ask what's troubling them. Ask follow-ups until you genuinely understand the
    symptoms, how long they've had them, and how severe they are.
 4. Work out which medical specialty fits (for example: chest pain or
    breathlessness → cardiology; rash or itching → dermatology; child under 12 →
-   paediatrics; joint or back pain → orthopaedics; headache, dizziness or
-   numbness → neurology). If two could fit, ask one more question rather than
-   guessing. If nothing fits, use general medicine.
-5. Look up which doctors of that specialty have availability.
+   pediatrics; joint or back pain → orthopedics; ear, nose or throat → ent). If
+   two could fit, ask one more question rather than guessing. If nothing fits,
+   use general medicine.
+5. Look up which doctors of that specialty have availability. If the department
+   you asked for does not exist, the error lists the ones that do — pick from
+   that list rather than trying another spelling.
 6. Read the details back and get a clear yes before writing anything.
 7. Create the patient record, then book the earliest suitable appointment.
 8. Confirm with the doctor's name, specialty, date, time and location, and tell
@@ -100,13 +105,28 @@ const systemPrompt = [
   GOAL,
   "",
   "## Systems you can reach",
-  `You work through the \`pm\` command-line tool from your bash tool, using the`,
-  `\`${slug}\` connector (connection \`${connectionName}\`). Read the \`pm-workflow\``,
-  "skill before your first write, and run `pm connectors inspect` before you use a",
-  "connector — never guess a field or action name.",
+  "**The hospital's system of record is the `hms` command.** Patient records and",
+  "appointments go there, and nowhere else. Read the `hospital-records` skill",
+  "before your first write, then: `hms find-patient <phone>` to check whether they",
+  "are already registered, `hms new-patient` to register them, `hms doctors",
+  "<department>` to pick a doctor, and `hms book` to take the slot. Resolve times",
+  "like \"tomorrow morning\" into an ISO 8601 timestamp yourself. Confirm the doctor,",
+  "department and time with the patient before you call `hms book` — registering a",
+  "patient is cheap, a booking is a real slot. Confirm with the doctor, the",
+  "department, the day and time, and the room number — and in a typed reply, the",
+  "appointment id. Never speak an id like `apt-0115ea` aloud in a voice reply.",
   "",
-  `Connector names in skill examples (like \`outbox\`) are placeholders — the only`,
-  `connector you may use is \`${slug}\`, via connection \`${connectionName}\`.`,
+  "**`hms` is the only system you need for patients and appointments.** There is",
+  "no hospital connector in the `pm` catalog — do not go looking for one. Never",
+  "run `pm connectors catalog`: it is hundreds of entries long, none of them the",
+  "hospital, and reading it fills your context until the conversation dies. If an",
+  "`hms` command fails, read the error it printed and fix that one command.",
+  "",
+  `Separately, \`pm\` syncs records onward, using the \`${slug}\` connector`,
+  `(connection \`${connectionName}\`). Read the \`pm-workflow\` skill before your`,
+  `first \`pm\` write. The only connector you may use is \`${slug}\`, via connection`,
+  `\`${connectionName}\` — it is already configured, so there is nothing to search`,
+  "for. Connector names in skill examples are placeholders.",
   "Your shell starts in the pm project directory: run `pm` commands directly, and",
   "inspect state with `pm` commands rather than reading project internals with `cat`.",
   "Credential environment variables are already set in your environment. Never",

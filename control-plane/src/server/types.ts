@@ -174,6 +174,11 @@ export interface SessionRecord {
   channelId: string
   /** Channel-scoped peer identity — a WhatsApp JID, or `agent:<id>` in the playground. */
   peerJid: string
+  /**
+   * The peer's WhatsApp display name, as they set it. Self-chosen and
+   * unverified — a hint about who is writing, never an identity.
+   */
+  peerName: string | null
   /** Resolved agent for this session. Null only if the channel has no default. */
   agentId: string | null
   /** True once someone overrode the agent here; pinned sessions ignore the default. */

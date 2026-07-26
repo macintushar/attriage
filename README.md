@@ -96,6 +96,24 @@ docker run --rm sarvam-sandbox:latest pm connectors inspect <slug>
 
 Only 224 of the 547 available connectors can write; the rest expose no mutations.
 
+## Mock hospital management system
+
+A stand-in for the hospital's real HIS, so a demo ends with a record you can point at.
+
+```bash
+bun run mock-hms/server.ts     # :8081 — open http://localhost:8081 for the live view
+```
+
+The sandbox image ships an `hms` CLI on the agent's `PATH` (`sandbox/bin/hms`, documented for the agent in `sandbox/skills/hospital-records.md`). It talks to the server over HTTP at `$HMS_URL`, which defaults to `http://host.docker.internal:8081` — the host, as seen from the container. The whole intake is three calls:
+
+```bash
+hms find-patient "$PHONE"
+hms new-patient --name "Priya S" --phone "$PHONE" --language ta
+hms book --patient pat-a1b2c3 --doctor doc-002 --at 2026-07-28T10:30:00+05:30
+```
+
+The dashboard at `/` lists appointments, patients and the doctor roster, and refreshes every 2s, so records appear as the agent writes them. State is `mock-hms/data.json` (gitignored) — delete it to reset. No auth, no persistence guarantees; it is a demo prop, not a service.
+
 ## Verify
 
 ```bash
