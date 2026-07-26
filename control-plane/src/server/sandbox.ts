@@ -60,10 +60,13 @@ async function isRunning(name: string): Promise<boolean> {
  * referenced by name inside (`pm credentials add --from-env`). They are never
  * written to the workspace, an image layer, or a command line the agent sees.
  */
-function credentialEnvArgs(agentId: string): string[] {
+async function credentialEnvArgs(
+  organizationId: string,
+  agentId: string
+): Promise<string[]> {
   const args: string[] = []
   const seen = new Set<string>()
-  for (const binding of getConnectors(agentId)) {
+  for (const binding of await getConnectors(organizationId, agentId)) {
     for (const envVar of Object.values(binding.credentialEnv)) {
       if (seen.has(envVar) || !process.env[envVar]) continue
       seen.add(envVar)
@@ -89,7 +92,7 @@ export async function ensureContainer(
 
   const name = containerName(id)
   if (await isRunning(name)) {
-    touchSession(id, { containerId: name })
+    await touchSession(session.organizationId, id, { containerId: name })
     await provision(agent, name)
     return { ...session, containerId: name }
   }
@@ -107,7 +110,7 @@ export async function ensureContainer(
     // No SARVAM_API_KEY here on purpose: the agent runs arbitrary shell
     // commands, so anything in its env is readable by the model. It reaches
     // Sarvam through the backend's shim instead.
-    ...credentialEnvArgs(agent.id),
+    ...(await credentialEnvArgs(agent.organizationId, agent.id)),
     // Lets the sandbox reach a model server on the host. Docker Desktop
     // provides this name already; the explicit mapping keeps Linux working.
     "--add-host",
@@ -133,7 +136,7 @@ export async function ensureContainer(
     throw new Error(`failed to start sandbox for ${id}: ${run.stderr.trim()}`)
   }
 
-  touchSession(id, { containerId: name })
+  await touchSession(session.organizationId, id, { containerId: name })
   await waitForReady(name)
   await provision(agent, name)
   return { ...session, containerId: name }
@@ -168,7 +171,7 @@ async function waitForReady(name: string, timeoutMs = 30_000) {
  * connections are not the ones the new agent needs.
  */
 async function provision(agent: AgentRecord, name: string) {
-  const bindings = getConnectors(agent.id)
+  const bindings = await getConnectors(agent.organizationId, agent.id)
   if (!bindings.length) return
   const marker = `/workspace/.provisioned-${agent.id.replace(/[^a-zA-Z0-9._-]/g, "-")}`
 
@@ -249,9 +252,12 @@ export function spawnInSession(
   }
 }
 
-export async function stopSession(id: string) {
+export async function stopSession(organizationId: string, id: string) {
   await docker(["rm", "-f", containerName(id)])
-  touchSession(id, { containerId: null, status: "reaped" })
+  await touchSession(organizationId, id, {
+    containerId: null,
+    status: "reaped",
+  })
 }
 
 const REAPER_KEY = Symbol.for("sarvam-control-plane.reaper")
@@ -263,9 +269,9 @@ const globals = globalThis as typeof globalThis & {
 export function startReaper() {
   if (globals[REAPER_KEY]) return
   globals[REAPER_KEY] = setInterval(async () => {
-    for (const session of staleSessions(env.sessionIdleMs)) {
+    for (const session of await staleSessions(env.sessionIdleMs)) {
       if (session.status === "running") continue
-      await stopSession(session.id).catch(() => {})
+      await stopSession(session.organizationId, session.id).catch(() => {})
     }
   }, 60_000)
 }

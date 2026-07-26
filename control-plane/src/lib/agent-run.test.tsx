@@ -162,7 +162,13 @@ describe("useAgentRun", () => {
     const source = FakeEventSource.last
 
     act(() => source.emit({ type: "run_start", run: RUN }))
-    act(() => source.emit({ type: "error", runId: 7, message: "403 invalid_api_key_error" }))
+    act(() =>
+      source.emit({
+        type: "error",
+        runId: 7,
+        message: "403 invalid_api_key_error",
+      })
+    )
 
     expect(result.current.error).toBe("403 invalid_api_key_error")
     expect(result.current.isBusy).toBe(false)

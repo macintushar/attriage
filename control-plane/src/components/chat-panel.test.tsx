@@ -28,7 +28,9 @@ class FakeMediaRecorder {
 
   stop() {
     this.state = "inactive"
-    this.ondataavailable?.({ data: new Blob(["audio"], { type: this.mimeType }) })
+    this.ondataavailable?.({
+      data: new Blob(["audio"], { type: this.mimeType }),
+    })
     this.onstop?.()
   }
 
@@ -112,7 +114,9 @@ describe("ChatPanel", () => {
     await act(async () => {
       screen.getByLabelText("Record voice note").click()
     })
-    expect(FakeMediaRecorder.last.options?.mimeType).toBe("audio/ogg;codecs=opus")
+    expect(FakeMediaRecorder.last.options?.mimeType).toBe(
+      "audio/ogg;codecs=opus"
+    )
   })
 
   it("ignores Enter on an empty draft", () => {

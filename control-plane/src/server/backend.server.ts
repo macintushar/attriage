@@ -31,16 +31,25 @@ import {
   setSessionAgent,
   updateAgent,
   updateChannel,
+  ensurePlaygroundChannel,
+  isOrganizationMember,
 } from "./db"
 import { channelBus, runBus, runTopic } from "./events"
 import { runPipeline } from "./pipeline"
 import type { PipelineInput } from "./pipeline"
-import { PLAYGROUND_CHANNEL_ID, peerLabel, playgroundPeer } from "./routing"
+import { peerLabel, playgroundPeer } from "./routing"
 import { chat } from "./sarvam"
 import { dockerAvailable, startReaper, stopSession } from "./sandbox"
 import { startSarvamShim } from "./sarvam-shim"
 import { backfillAudioDurations } from "./audio-backfill"
-import type { AgentRecord, ChannelKind, ChannelRecord } from "./types"
+import { auth } from "./auth"
+import { migrateDatabase } from "./db/migrate"
+import type {
+  AgentRecord,
+  ChannelKind,
+  ChannelRecord,
+  ConnectorBinding,
+} from "./types"
 
 const STARTED_KEY = Symbol.for("sarvam-control-plane.backend-started")
 const globals = globalThis as typeof globalThis & {
@@ -51,13 +60,14 @@ const globals = globalThis as typeof globalThis & {
  * Starts long-lived backend services once per process. Keeping the marker on
  * globalThis makes this safe across Vite server-module reloads in development.
  */
-function ensureBackendStarted() {
+async function ensureBackendStarted() {
+  await migrateDatabase()
   if (globals[STARTED_KEY]) return
   ensureDataDirs()
   startReaper()
   startSarvamShim()
   globals[STARTED_KEY] = true
-  reconnectPairedChannels()
+  void reconnectPairedChannels()
   void backfillAudioDurations()
 
   if (!env.sarvamKey) {
@@ -112,29 +122,31 @@ function sse(
   })
 }
 
-function agentPayload(agent: AgentRecord) {
+async function agentPayload(organizationId: string, agent: AgentRecord) {
   return {
     ...agent,
-    connectors: getConnectors(agent.id),
+    connectors: await getConnectors(organizationId, agent.id),
     // Agents no longer own a channel, so the useful summary is the inverse:
     // which channels currently point work at this agent.
-    channels: channelsUsingAgent(agent.id).map((channel) => ({
-      id: channel.id,
-      name: channel.name,
-      kind: channel.kind,
-      status: channelStatus(channel.id),
-      isDefault: channel.defaultAgentId === agent.id,
-    })),
+    channels: (await channelsUsingAgent(organizationId, agent.id)).map(
+      (channel) => ({
+        id: channel.id,
+        name: channel.name,
+        kind: channel.kind,
+        status: channelStatus(channel.id),
+        isDefault: channel.defaultAgentId === agent.id,
+      })
+    ),
   }
 }
 
-function channelPayload(channel: ChannelRecord) {
+async function channelPayload(organizationId: string, channel: ChannelRecord) {
   return {
     ...channel,
     status: channelStatus(channel.id),
-    sessionCount: countSessions(channel.id),
+    sessionCount: await countSessions(organizationId, channel.id),
     defaultAgentName: channel.defaultAgentId
-      ? (getAgent(channel.defaultAgentId)?.name ?? null)
+      ? ((await getAgent(organizationId, channel.defaultAgentId))?.name ?? null)
       : null,
   }
 }
@@ -172,8 +184,8 @@ function toMessagePayload(
   }
 }
 
-function messagePayload(sessionId: string) {
-  return listMessages(sessionId).map((message) =>
+async function messagePayload(organizationId: string, sessionId: string) {
+  return (await listMessages(organizationId, sessionId)).map((message) =>
     toMessagePayload(sessionId, message)
   )
 }
@@ -205,7 +217,7 @@ export async function handleBackendRequest(
   request: Request,
   path: string
 ): Promise<Response> {
-  ensureBackendStarted()
+  await ensureBackendStarted()
   const url = new URL(request.url)
 
   // ── health ────────────────────────────────────────────────────────────────
@@ -219,17 +231,41 @@ export async function handleBackendRequest(
     })
   }
 
+  if (path === "/auth" || path.startsWith("/auth/")) {
+    return auth.handler(request)
+  }
+
+  const authSession = await auth.api.getSession({ headers: request.headers })
+  if (!authSession) return json({ error: "authentication required" }, 401)
+  const organizationId = authSession.session.activeOrganizationId
+  if (
+    !organizationId ||
+    !(await isOrganizationMember(authSession.user.id, organizationId))
+  ) {
+    return json({ error: "active organization required" }, 403)
+  }
+
+  if (path === "/onboarding" && request.method === "POST") {
+    return json(await ensurePlaygroundChannel(organizationId), 201)
+  }
+
   // ── agents ────────────────────────────────────────────────────────────────
   if (path === "/agents" && request.method === "GET") {
-    return json(listAgents().map(agentPayload))
+    return json(
+      await Promise.all(
+        (await listAgents(organizationId)).map((agent) =>
+          agentPayload(organizationId, agent)
+        )
+      )
+    )
   }
 
   if (path === "/agents" && request.method === "POST") {
     const body = (await request.json()) as Partial<AgentRecord> & {
-      connectors?: ReturnType<typeof getConnectors>
+      connectors?: ConnectorBinding[]
     }
     if (!body.name?.trim()) return json({ error: "name is required" }, 400)
-    const agent = createAgent({
+    const agent = await createAgent(organizationId, {
       name: body.name,
       voice: body.voice ?? true,
       tools: body.tools ?? [],
@@ -239,7 +275,8 @@ export async function handleBackendRequest(
       ttsSpeaker: body.ttsSpeaker ?? "shubh",
     })
     if (body.connectors?.length) {
-      setConnectors(
+      await setConnectors(
+        organizationId,
         agent.id,
         body.connectors.map((connector) => ({
           ...connector,
@@ -247,7 +284,7 @@ export async function handleBackendRequest(
         }))
       )
     }
-    return json(agentPayload(agent), 201)
+    return json(await agentPayload(organizationId, agent), 201)
   }
 
   const agentMatch = path.match(/^\/agents\/([^/]+)(\/.*)?$/)
@@ -255,20 +292,21 @@ export async function handleBackendRequest(
     const agentId = agentMatch.at(1)
     const rest = agentMatch.at(2) ?? ""
     if (!agentId) return json({ error: "bad agent path" }, 400)
-    const agent = getAgent(agentId)
+    const agent = await getAgent(organizationId, agentId)
     if (!agent) return json({ error: "agent not found" }, 404)
 
     if (rest === "" && request.method === "GET") {
-      return json(agentPayload(agent))
+      return json(await agentPayload(organizationId, agent))
     }
 
     if (rest === "" && request.method === "PATCH") {
       const patch = (await request.json()) as Partial<AgentRecord> & {
-        connectors?: ReturnType<typeof getConnectors>
+        connectors?: ConnectorBinding[]
       }
-      const next = updateAgent(agentId, patch)
+      const next = await updateAgent(organizationId, agentId, patch)
       if (patch.connectors) {
-        setConnectors(
+        await setConnectors(
+          organizationId,
           agentId,
           patch.connectors.map((connector) => ({
             ...connector,
@@ -276,17 +314,21 @@ export async function handleBackendRequest(
           }))
         )
       }
-      return json(agentPayload(next!))
+      return json(await agentPayload(organizationId, next!))
     }
 
     if (rest === "" && request.method === "DELETE") {
       // Channels that pointed here keep running and report "no agent"; only the
       // agent's own playground sessions go with it.
-      for (const session of playgroundSessionsFor(agentId)) {
-        if (session.containerId) await stopSession(session.id).catch(() => {})
-        deleteSession(session.id)
+      for (const session of await playgroundSessionsFor(
+        organizationId,
+        agentId
+      )) {
+        if (session.containerId)
+          await stopSession(organizationId, session.id).catch(() => {})
+        await deleteSession(organizationId, session.id)
       }
-      deleteAgent(agentId)
+      await deleteAgent(organizationId, agentId)
       return json({ ok: true })
     }
 
@@ -303,22 +345,28 @@ export async function handleBackendRequest(
         agentId,
         url.searchParams.get("peer") || undefined
       )
-      const playground = getChannel(PLAYGROUND_CHANNEL_ID)
-      if (!playground) return json({ error: "no playground channel" }, 500)
-
+      const playground = await ensurePlaygroundChannel(organizationId)
       if (request.method === "GET") {
-        const session = ensureSessionRow(playground.id, peer, agentId, {
-          pinned: true,
-        }).session
-        return json(messagePayload(session.id))
+        const session = (
+          await ensureSessionRow(organizationId, playground.id, peer, agentId, {
+            pinned: true,
+          })
+        ).session
+        return json(await messagePayload(organizationId, session.id))
       }
 
       if (request.method === "POST") {
         const input = await readInput(request)
         if (input instanceof Response) return input
-        const { session } = ensureSessionRow(playground.id, peer, agentId, {
-          pinned: true,
-        })
+        const { session } = await ensureSessionRow(
+          organizationId,
+          playground.id,
+          peer,
+          agentId,
+          {
+            pinned: true,
+          }
+        )
         // Fire-and-forget: the caller watches /events for progress.
         runPipeline({
           channel: playground,
@@ -334,7 +382,13 @@ export async function handleBackendRequest(
 
   // ── channels ──────────────────────────────────────────────────────────────
   if (path === "/channels" && request.method === "GET") {
-    return json(listChannels().map(channelPayload))
+    return json(
+      await Promise.all(
+        (await listChannels(organizationId)).map((channel) =>
+          channelPayload(organizationId, channel)
+        )
+      )
+    )
   }
 
   if (path === "/channels" && request.method === "POST") {
@@ -348,15 +402,18 @@ export async function handleBackendRequest(
     if (kind === "playground") {
       return json({ error: "the playground channel is built in" }, 400)
     }
-    if (body.defaultAgentId && !getAgent(body.defaultAgentId)) {
+    if (
+      body.defaultAgentId &&
+      !(await getAgent(organizationId, body.defaultAgentId))
+    ) {
       return json({ error: "unknown default agent" }, 400)
     }
-    const channel = createChannel({
+    const channel = await createChannel(organizationId, {
       name: body.name.trim(),
       kind,
       defaultAgentId: body.defaultAgentId ?? null,
     })
-    return json(channelPayload(channel), 201)
+    return json(await channelPayload(organizationId, channel), 201)
   }
 
   const channelMatch = path.match(/^\/channels\/([^/]+)(\/.*)?$/)
@@ -364,11 +421,11 @@ export async function handleBackendRequest(
     const channelId = channelMatch.at(1)
     const rest = channelMatch.at(2) ?? ""
     if (!channelId) return json({ error: "bad channel path" }, 400)
-    const channel = getChannel(channelId)
+    const channel = await getChannel(organizationId, channelId)
     if (!channel) return json({ error: "channel not found" }, 404)
 
     if (rest === "" && request.method === "GET") {
-      return json(channelPayload(channel))
+      return json(await channelPayload(organizationId, channel))
     }
 
     if (rest === "" && request.method === "PATCH") {
@@ -376,16 +433,19 @@ export async function handleBackendRequest(
         name?: string
         defaultAgentId?: string | null
       }
-      if (body.defaultAgentId && !getAgent(body.defaultAgentId)) {
+      if (
+        body.defaultAgentId &&
+        !(await getAgent(organizationId, body.defaultAgentId))
+      ) {
         return json({ error: "unknown default agent" }, 400)
       }
-      const next = updateChannel(channelId, {
+      const next = await updateChannel(organizationId, channelId, {
         name: body.name?.trim() || undefined,
         // `null` clears the default; `undefined` leaves it alone.
         defaultAgentId:
           body.defaultAgentId === undefined ? undefined : body.defaultAgentId,
       })
-      return json(channelPayload(next!))
+      return json(await channelPayload(organizationId, next!))
     }
 
     if (rest === "" && request.method === "DELETE") {
@@ -393,16 +453,17 @@ export async function handleBackendRequest(
         return json({ error: "the playground channel cannot be deleted" }, 400)
       }
       await disconnectChannel(channelId).catch(() => {})
-      for (const session of listSessions(channelId)) {
-        if (session.containerId) await stopSession(session.id).catch(() => {})
+      for (const session of await listSessions(organizationId, channelId)) {
+        if (session.containerId)
+          await stopSession(organizationId, session.id).catch(() => {})
       }
-      deleteChannel(channelId)
+      await deleteChannel(organizationId, channelId)
       return json({ ok: true })
     }
 
     // Pairing: POST starts it, GET streams QR + status.
     if (rest === "/connect" && request.method === "POST") {
-      connectChannel(channelId).catch((error) => {
+      connectChannel(organizationId, channelId).catch((error) => {
         channelBus.emit(channelId, {
           type: "status",
           status: "disconnected",
@@ -435,19 +496,23 @@ export async function handleBackendRequest(
     }
 
     if (rest === "/sessions" && request.method === "GET") {
+      const summaries = await listSessions(organizationId, channelId)
       return json(
-        listSessions(channelId).map((session) => ({
-          ...session,
-          peerLabel: peerLabel(session.peerJid),
-          agentName: session.agentId
-            ? (getAgent(session.agentId)?.name ?? null)
-            : null,
-          // What would answer right now, which is not session.agentId when the
-          // session is unpinned and the channel default has since moved.
-          effectiveAgentId: session.agentPinned
-            ? session.agentId
-            : (channel.defaultAgentId ?? session.agentId),
-        }))
+        await Promise.all(
+          summaries.map(async (session) => ({
+            ...session,
+            peerLabel: peerLabel(session.peerJid),
+            agentName: session.agentId
+              ? ((await getAgent(organizationId, session.agentId))?.name ??
+                null)
+              : null,
+            // What would answer right now, which is not session.agentId when the
+            // session is unpinned and the channel default has since moved.
+            effectiveAgentId: session.agentPinned
+              ? session.agentId
+              : (channel.defaultAgentId ?? session.agentId),
+          }))
+        )
       )
     }
 
@@ -459,7 +524,8 @@ export async function handleBackendRequest(
         agentId?: string | null
       }
       if (!body.peerJid?.trim()) return json({ error: "peerJid required" }, 400)
-      const { session, created } = ensureSessionRow(
+      const { session, created } = await ensureSessionRow(
+        organizationId,
         channelId,
         body.peerJid.trim(),
         body.agentId ?? channel.defaultAgentId,
@@ -480,7 +546,10 @@ export async function handleBackendRequest(
         1,
         Math.min(requested > 0 ? requested : 2_000, 5_000)
       )
-      const rows = listChannelMessages(channelId, { search, limit })
+      const rows = await listChannelMessages(organizationId, channelId, {
+        search,
+        limit,
+      })
 
       const bySession = new Map<string, typeof rows>()
       for (const row of rows) {
@@ -491,15 +560,17 @@ export async function handleBackendRequest(
 
       // listSessions is already ordered by lastActiveAt DESC, so conversations
       // come out newest-active first. A search drops the ones with no match.
-      const sessions = listSessions(channelId)
-        .filter((session) => bySession.has(session.id))
-        .map((session) => ({
+      const sessionRows = (
+        await listSessions(organizationId, channelId)
+      ).filter((session) => bySession.has(session.id))
+      const transcriptSessions = await Promise.all(
+        sessionRows.map(async (session) => ({
           id: session.id,
           peerJid: session.peerJid,
           peerLabel: peerLabel(session.peerJid),
           agentId: session.agentId,
           agentName: session.agentId
-            ? (getAgent(session.agentId)?.name ?? null)
+            ? ((await getAgent(organizationId, session.agentId))?.name ?? null)
             : null,
           lastActiveAt: session.lastActiveAt,
           // The conversation's real length, not the filtered count, so a search
@@ -510,9 +581,10 @@ export async function handleBackendRequest(
             .reverse()
             .map((row) => toMessagePayload(session.id, row)),
         }))
+      )
 
       return json({
-        sessions,
+        sessions: transcriptSessions,
         totalMessages: rows.length,
         truncated: rows.length >= limit,
       })
@@ -525,13 +597,16 @@ export async function handleBackendRequest(
     const sessionId = sessionMatch.at(1)
     const rest = sessionMatch.at(2) ?? ""
     if (!sessionId) return json({ error: "bad session path" }, 400)
-    const session = getSession(sessionId)
+    const session = await getSession(organizationId, sessionId)
     if (!session) return json({ error: "session not found" }, 404)
-    const channel = getChannel(session.channelId)
+    const channel = await getChannel(organizationId, session.channelId)
     if (!channel) return json({ error: "channel not found" }, 404)
 
     if (rest === "" && request.method === "GET") {
-      const { session: fresh, agentId } = routeInbound(channel, session.peerJid)
+      const { session: fresh, agentId } = await routeInbound(
+        channel,
+        session.peerJid
+      )
       return json({
         ...fresh,
         peerLabel: peerLabel(fresh.peerJid),
@@ -539,8 +614,10 @@ export async function handleBackendRequest(
         channelKind: channel.kind,
         channelDefaultAgentId: channel.defaultAgentId,
         effectiveAgentId: agentId,
-        effectiveAgentName: agentId ? (getAgent(agentId)?.name ?? null) : null,
-        messages: messagePayload(fresh.id),
+        effectiveAgentName: agentId
+          ? ((await getAgent(organizationId, agentId))?.name ?? null)
+          : null,
+        messages: await messagePayload(organizationId, fresh.id),
       })
     }
 
@@ -548,20 +625,26 @@ export async function handleBackendRequest(
     // and put it back under the channel's default.
     if (rest === "" && request.method === "PATCH") {
       const body = (await request.json()) as { agentId?: string | null }
-      if (body.agentId && !getAgent(body.agentId)) {
+      if (body.agentId && !(await getAgent(organizationId, body.agentId))) {
         return json({ error: "unknown agent" }, 400)
       }
       const next = body.agentId
-        ? setSessionAgent(sessionId, body.agentId, true)
-        : setSessionAgent(sessionId, channel.defaultAgentId, false)
+        ? await setSessionAgent(organizationId, sessionId, body.agentId, true)
+        : await setSessionAgent(
+            organizationId,
+            sessionId,
+            channel.defaultAgentId,
+            false
+          )
       return json(next)
     }
 
     if (rest === "" && request.method === "DELETE") {
       // Drops the container and the transcript. The workspace on disk survives,
       // so an accidental reset is recoverable by hand.
-      if (session.containerId) await stopSession(sessionId).catch(() => {})
-      deleteSession(sessionId)
+      if (session.containerId)
+        await stopSession(organizationId, sessionId).catch(() => {})
+      await deleteSession(organizationId, sessionId)
       return json({ ok: true })
     }
 
@@ -572,8 +655,8 @@ export async function handleBackendRequest(
     // Send into a session as the operator — the reply goes out over the real
     // channel when there is one, so this is how you nudge a stalled chat.
     if (rest === "/messages" && request.method === "POST") {
-      const { agentId } = routeInbound(channel, session.peerJid)
-      const agent = agentId ? getAgent(agentId) : null
+      const { agentId } = await routeInbound(channel, session.peerJid)
+      const agent = agentId ? await getAgent(organizationId, agentId) : null
       if (!agent) return json({ error: "no agent assigned" }, 409)
       const input = await readInput(request)
       if (input instanceof Response) return input
@@ -595,6 +678,9 @@ export async function handleBackendRequest(
     const name = media.at(2)
     if (!sessionId || !name || name.includes("..")) {
       return json({ error: "bad path" }, 400)
+    }
+    if (!(await getSession(organizationId, sessionId))) {
+      return json({ error: "not found" }, 404)
     }
     try {
       const file = await readFile(

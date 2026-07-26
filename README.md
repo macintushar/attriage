@@ -57,7 +57,7 @@ cp .env.example .env          # add SARVAM_API_KEY from dashboard.sarvam.ai
 ./sandbox/build.sh            # builds pi + pm into sarvam-sandbox:latest (few min)
 ./sandbox/smoke.sh            # verifies the image and the full pm write path
 
-cd control-plane && bun install && bun run seed   # patient-intake agent + a WhatsApp channel
+cd control-plane && bun install
 ```
 
 ## Run
@@ -66,12 +66,21 @@ cd control-plane && bun install && bun run seed   # patient-intake agent + a Wha
 cd control-plane && bun run dev      # :3000
 ```
 
-Open <http://localhost:3000>. The nav badge turns amber if `SARVAM_API_KEY` is missing or Docker is unreachable — the two things that silently break a demo.
+Open <http://localhost:3000>, create an account, and create an organization. The
+nav badge turns amber if `SARVAM_API_KEY` is missing or Docker is unreachable.
+
+To add the demo agent and WhatsApp channel, copy the organization ID from the
+database or Better Auth response and run:
+
+```bash
+SEED_ORGANIZATION_ID=<organization-id> bun run seed
+```
 
 Drive one turn without a browser or WhatsApp:
 
 ```bash
-cd control-plane && bun run try-turn patient-intake "hi, I need to see a doctor"
+cd control-plane
+SEED_ORGANIZATION_ID=<organization-id> bun run try-turn patient-intake "hi, I need to see a doctor"
 ```
 
 Connect a real number: **Channels → pick the channel → Pairing → Connect WhatsApp → scan the QR → Settings → Linked devices**. Use a spare number; Baileys is an unofficial client and WhatsApp can suspend numbers that automate. Pairing survives a restart — credentials live in `data/wa/<channelId>/` and a connected channel reconnects at boot.
@@ -103,3 +112,17 @@ Only 224 of the 547 available connectors can write; the rest expose no mutations
 cd control-plane && bun run typecheck && bun run lint && bun run test
 cd control-plane && bun run build
 ```
+
+## Reset the local database
+
+Stop the application first. Existing data is intentionally disposable during
+this migration:
+
+```bash
+rm -f control-plane/data/app.db control-plane/data/app.db-wal control-plane/data/app.db-shm
+cd control-plane
+bun run db:migrate
+```
+
+Normal application startup only applies checked-in migrations; it never deletes
+or recreates the database.

@@ -16,7 +16,11 @@ import { cn } from "@/lib/utils"
 import { LANGUAGES, TTS_SPEAKERS, addAgent } from "@/lib/agents-store"
 import type { ConnectorBinding } from "@/lib/agents-store"
 import { CONNECTORS, getConnector } from "@/lib/pm-catalog"
-import { PROMPT_TWEAKS, generateSystemPrompt, improvePrompt } from "@/lib/prompt-gen"
+import {
+  PROMPT_TWEAKS,
+  generateSystemPrompt,
+  improvePrompt,
+} from "@/lib/prompt-gen"
 import { ConnectorPicker } from "@/components/connector-picker"
 
 export const Route = createFileRoute("/agents/new")({ component: NewAgent })
@@ -263,7 +267,9 @@ function NewAgent() {
                 ))}
               </select>
             </label>
-            <label className={cn("rounded-2xl border p-4", !voice && "opacity-50")}>
+            <label
+              className={cn("rounded-2xl border p-4", !voice && "opacity-50")}
+            >
               <div className="text-sm font-medium">Voice</div>
               <div className="text-xs text-muted-foreground">
                 Bulbul v3 speaker for spoken replies.
@@ -335,7 +341,9 @@ function NewAgent() {
                       Connection name
                       <input
                         value={binding.connectionName}
-                        onChange={(e) => update({ connectionName: e.target.value })}
+                        onChange={(e) =>
+                          update({ connectionName: e.target.value })
+                        }
                         className="mt-1 h-9 w-full rounded-xl border bg-background px-2 font-mono text-xs outline-none focus:border-ring"
                       />
                     </label>
@@ -353,7 +361,9 @@ function NewAgent() {
                                 onClick={() =>
                                   update({
                                     allowedActions: on
-                                      ? binding.allowedActions.filter((a) => a !== action)
+                                      ? binding.allowedActions.filter(
+                                          (a) => a !== action
+                                        )
                                       : [...binding.allowedActions, action],
                                   })
                                 }
@@ -447,7 +457,9 @@ function NewAgent() {
             <input
               value={instruction}
               onChange={(e) => setInstruction(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void runInstruction(instruction)}
+              onKeyDown={(e) =>
+                e.key === "Enter" && void runInstruction(instruction)
+              }
               disabled={improving}
               placeholder="Or tell it what to change… e.g. “always confirm the appointment time twice”"
               className="mt-2 h-9 w-full rounded-xl border bg-background px-3 text-xs outline-none placeholder:text-muted-foreground focus:border-ring focus:ring-3 focus:ring-ring/30 disabled:opacity-50"

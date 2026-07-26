@@ -9,7 +9,12 @@ export interface PromptInputs {
 }
 
 /** Auto-generates the agent's system prompt from the builder selections. */
-export function generateSystemPrompt({ name, voice, tools, goal }: PromptInputs) {
+export function generateSystemPrompt({
+  name,
+  voice,
+  tools,
+  goal,
+}: PromptInputs) {
   const lines: string[] = [
     `You are **${name || "the assistant"}**, talking to people on WhatsApp.`,
     "",

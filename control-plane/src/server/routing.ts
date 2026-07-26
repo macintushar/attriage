@@ -63,6 +63,7 @@ export function peerLabel(peerJid: string): string {
   // A playground peer is `<source>:<agentId>`. The source is what tells two of
   // them apart — the in-app chat, the CLI, or a web-chat tab.
   const agentId = agentFromPlaygroundPeer(peerJid)
-  if (agentId) return `${agentId} (${peerJid.slice(0, peerJid.lastIndexOf(":"))})`
+  if (agentId)
+    return `${agentId} (${peerJid.slice(0, peerJid.lastIndexOf(":"))})`
   return peerJid
 }

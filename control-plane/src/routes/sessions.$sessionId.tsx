@@ -131,7 +131,11 @@ function SessionView({ loaded }: { loaded: SessionDetail }) {
               }
             />
           </div>
-          <Button variant="destructive" size="icon" onClick={() => void remove()}>
+          <Button
+            variant="destructive"
+            size="icon"
+            onClick={() => void remove()}
+          >
             <IconTrash />
           </Button>
         </div>

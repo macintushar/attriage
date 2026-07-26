@@ -26,7 +26,8 @@ function Channels() {
         <div>
           <h1 className="font-heading text-xl font-semibold">Channels</h1>
           <p className="text-sm text-muted-foreground">
-            Where people reach you — each channel routes its sessions to an agent
+            Where people reach you — each channel routes its sessions to an
+            agent
           </p>
         </div>
         <Link to="/channels/new" className={buttonVariants()}>

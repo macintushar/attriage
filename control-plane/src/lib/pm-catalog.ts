@@ -72,7 +72,8 @@ export function filterConnectors({ query, stage }: CatalogFilter): Connector[] {
 /** Deterministic avatar hue per connector so the catalog feels branded */
 export function avatarStyle(slug: string): CSSProperties {
   let hash = 0
-  for (let i = 0; i < slug.length; i++) hash = (hash * 31 + slug.charCodeAt(i)) | 0
+  for (let i = 0; i < slug.length; i++)
+    hash = (hash * 31 + slug.charCodeAt(i)) | 0
   const hue = Math.abs(hash) % 360
   return {
     backgroundColor: `oklch(0.93 0.05 ${hue})`,

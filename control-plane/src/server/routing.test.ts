@@ -24,7 +24,9 @@ describe("resolveAgentId", () => {
 
   it("keeps a pinned session on its agent when the default moves", () => {
     expect(
-      resolveAgentId(session("vip-agent", true), { defaultAgentId: "new-agent" })
+      resolveAgentId(session("vip-agent", true), {
+        defaultAgentId: "new-agent",
+      })
     ).toBe("vip-agent")
   })
 

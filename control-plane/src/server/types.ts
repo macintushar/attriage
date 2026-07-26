@@ -25,7 +25,13 @@ export interface ChatMessage {
 export type StageStatus = "idle" | "running" | "done" | "skipped" | "error"
 
 export type StageId =
-  "receive" | "download" | "stt" | "sandbox" | "agent" | "tts" | "send"
+  | "receive"
+  | "download"
+  | "stt"
+  | "sandbox"
+  | "agent"
+  | "tts"
+  | "send"
 
 /** One Pi tool call, nested under the `agent` stage in the trace. */
 export interface AgentStep {
@@ -69,7 +75,12 @@ export type ChannelEvent =
   | { type: "qr"; dataUrl: string }
   | { type: "status"; status: ChannelStatus; phone?: string; error?: string }
   /** A peer we had never seen before opened a session on this channel. */
-  | { type: "session"; sessionId: string; peerJid: string; agentId: string | null }
+  | {
+      type: "session"
+      sessionId: string
+      peerJid: string
+      agentId: string | null
+    }
 
 export type ChannelStatus = "disconnected" | "pairing" | "connected"
 
@@ -139,6 +150,7 @@ export function channelService(kind: ChannelKind, name: string): string {
  */
 export interface AgentRecord {
   id: string
+  organizationId: string
   name: string
   voice: boolean
   tools: string[]
@@ -158,6 +170,7 @@ export type ChannelKind = "whatsapp" | "playground" | "telegram" | "webchat"
 
 export interface ChannelRecord {
   id: string
+  organizationId: string
   name: string
   kind: ChannelKind
   /** Agent handed every new session, unless the session is pinned elsewhere. */
@@ -171,6 +184,7 @@ export interface ChannelRecord {
 
 export interface SessionRecord {
   id: string
+  organizationId: string
   channelId: string
   /** Channel-scoped peer identity — a WhatsApp JID, or `agent:<id>` in the playground. */
   peerJid: string

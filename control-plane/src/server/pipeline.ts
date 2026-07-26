@@ -115,7 +115,9 @@ export async function runPipeline({
   try {
     // ── receive ──────────────────────────────────────────────────────────────
     begin("receive")
-    touchSession(session.id, { agentId: agent.id })
+    await touchSession(channel.organizationId, session.id, {
+      agentId: agent.id,
+    })
     finish(
       "receive",
       `${input.kind} message from ${peerLabel(session.peerJid)} → ${agent.name}`
@@ -153,7 +155,7 @@ export async function runPipeline({
       ? audioDuration(audio, input.audioSeconds)
       : undefined
 
-    const userMessageId = insertMessage({
+    const userMessageId = await insertMessage(channel.organizationId, {
       sessionId: session.id,
       role: "user",
       kind: input.kind,
@@ -183,7 +185,7 @@ export async function runPipeline({
       )
       userText = result.transcript
       detectedLanguage = result.languageCode
-      patchMessage(userMessageId, { transcript: userText })
+      await patchMessage(userMessageId, { transcript: userText })
       emitRun(topics, {
         type: "message_patch",
         id: userMessageId,
@@ -204,7 +206,9 @@ export async function runPipeline({
     // stage rather than hiding inside "receive" where nobody can see it.
     begin("sandbox")
     const ready = await ensureContainer(session, agent)
-    touchSession(session.id, { status: "running" })
+    await touchSession(channel.organizationId, session.id, {
+      status: "running",
+    })
     finish("sandbox", `container ${ready.containerId}`)
 
     // ── agent ────────────────────────────────────────────────────────────────
@@ -219,7 +223,7 @@ export async function runPipeline({
       emitRun(topics, { type: "step", runId, step })
     })
 
-    touchSession(session.id, { status: "idle" })
+    await touchSession(channel.organizationId, session.id, { status: "idle" })
 
     if (result.error && !result.text) {
       fail("agent", result.error)
@@ -258,7 +262,7 @@ export async function runPipeline({
 
     const replySeconds = replyAudio ? audioDuration(replyAudio) : undefined
 
-    const agentMessageId = insertMessage({
+    const agentMessageId = await insertMessage(channel.organizationId, {
       sessionId: session.id,
       role: "agent",
       kind: replyAudio ? "voice" : "text",
@@ -301,7 +305,7 @@ export async function runPipeline({
     })
     // A failed turn must not leave the session marked "running", or the reaper
     // will refuse to ever clean up its container.
-    touchSession(session.id, { status: "idle" })
+    await touchSession(channel.organizationId, session.id, { status: "idle" })
     throw error
   }
 }
