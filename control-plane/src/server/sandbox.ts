@@ -6,6 +6,7 @@ import type { Readable } from "node:stream"
 import { env } from "./env"
 import { getConnectors, staleSessions, touchSession } from "./db"
 import type { AgentRecord, SessionRecord } from "./types"
+import { log } from "./logger"
 
 export interface ExecResult {
   code: number
@@ -84,6 +85,11 @@ export async function ensureContainer(
   session: SessionRecord,
   agent: AgentRecord
 ): Promise<SessionRecord> {
+  const startedAt = performance.now()
+  log.info("sandbox.ensure.started", {
+    sessionId: session.id,
+    agentId: agent.id,
+  })
   const { id, workdir } = session
   mkdirSync(workdir, { recursive: true })
 
@@ -91,6 +97,11 @@ export async function ensureContainer(
   if (await isRunning(name)) {
     touchSession(id, { containerId: name })
     await provision(agent, name)
+    log.info("sandbox.ensure.reused", {
+      sessionId: id,
+      containerId: name,
+      durationMs: Math.round(performance.now() - startedAt),
+    })
     return { ...session, containerId: name }
   }
 
@@ -136,6 +147,11 @@ export async function ensureContainer(
   touchSession(id, { containerId: name })
   await waitForReady(name)
   await provision(agent, name)
+  log.info("sandbox.ensure.completed", {
+    sessionId: id,
+    containerId: name,
+    durationMs: Math.round(performance.now() - startedAt),
+  })
   return { ...session, containerId: name }
 }
 
@@ -170,6 +186,10 @@ async function waitForReady(name: string, timeoutMs = 30_000) {
 async function provision(agent: AgentRecord, name: string) {
   const bindings = getConnectors(agent.id)
   if (!bindings.length) return
+  log.info("sandbox.provision.started", {
+    agentId: agent.id,
+    connectorCount: bindings.length,
+  })
   const marker = `/workspace/.provisioned-${agent.id.replace(/[^a-zA-Z0-9._-]/g, "-")}`
 
   const lines = ["set -e", 'cd "$PM_PROJECT_DIR"']
@@ -211,6 +231,10 @@ async function provision(agent: AgentRecord, name: string) {
         `\`pm connectors inspect <slug>\`.`
     )
   }
+  log.info("sandbox.provision.completed", {
+    agentId: agent.id,
+    connectorCount: bindings.length,
+  })
 }
 
 export async function execInSession(
@@ -250,8 +274,10 @@ export function spawnInSession(
 }
 
 export async function stopSession(id: string) {
+  log.info("sandbox.stop.started", { sessionId: id })
   await docker(["rm", "-f", containerName(id)])
   touchSession(id, { containerId: null, status: "reaped" })
+  log.info("sandbox.stop.completed", { sessionId: id })
 }
 
 const REAPER_KEY = Symbol.for("sarvam-control-plane.reaper")
@@ -262,10 +288,16 @@ const globals = globalThis as typeof globalThis & {
 /** Idle containers are removed; their workdir (and Pi session JSONL) survives. */
 export function startReaper() {
   if (globals[REAPER_KEY]) return
+  log.info("sandbox.reaper.started", { idleMs: env.sessionIdleMs })
   globals[REAPER_KEY] = setInterval(async () => {
     for (const session of staleSessions(env.sessionIdleMs)) {
       if (session.status === "running") continue
-      await stopSession(session.id).catch(() => {})
+      await stopSession(session.id).catch((error) =>
+        log.error("sandbox.reaper.stop_failed", {
+          sessionId: session.id,
+          error,
+        })
+      )
     }
   }, 60_000)
 }

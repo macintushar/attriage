@@ -12,6 +12,7 @@ import {
   observeBaileysLifecycle,
   phoneFromWhatsAppJid,
   registerWhatsAppMessageHandler,
+  sendWhatsAppVoiceNote,
 } from "./channel-bridge"
 import {
   ensureSessionRow,
@@ -25,6 +26,7 @@ import { env, paths } from "./env"
 import { runPipeline } from "./pipeline"
 import { resolveAgentId } from "./routing"
 import type { ChannelRecord, ChannelStatus, SessionRecord } from "./types"
+import { log } from "./logger"
 
 interface Connection {
   channelId: string
@@ -46,6 +48,7 @@ function setStatus(
   status: ChannelStatus,
   extra: { phone?: string; error?: string } = {}
 ) {
+  log.info("channel.status.changed", { channelId, status, ...extra })
   const conn = connections.get(channelId)
   if (conn) conn.status = status
   updateChannel(channelId, {
@@ -92,7 +95,14 @@ export function routeInbound(
  * directory per channel means one process can front many numbers.
  */
 export async function connectChannel(channelId: string): Promise<void> {
-  if (connections.has(channelId)) return
+  if (connections.has(channelId)) {
+    log.debug("channel.connect.skipped", {
+      channelId,
+      reason: "already_connected",
+    })
+    return
+  }
+  log.info("channel.connect.started", { channelId })
 
   const channel = getChannel(channelId)
   if (!channel) throw new Error(`unknown channel ${channelId}`)
@@ -110,6 +120,7 @@ export async function connectChannel(channelId: string): Promise<void> {
     userName: channel.name,
     onQR: async (qr) => {
       setStatus(channelId, "pairing")
+      log.info("channel.qr.generated", { channelId })
       channelBus.emit(channelId, {
         type: "qr",
         dataUrl: await QRCode.toDataURL(qr),
@@ -166,6 +177,17 @@ export async function connectChannel(channelId: string): Promise<void> {
 
     const peerJid = thread.id
     const { session, agentId, created } = routeInbound(current, peerJid)
+    log.info("channel.message.received", {
+      channelId,
+      sessionId: session.id,
+      agentId,
+      kind: message.attachments.some(
+        (attachment) => attachment.type === "audio"
+      )
+        ? "voice"
+        : "text",
+      newSession: created,
+    })
     if (created) {
       channelBus.emit(channelId, {
         type: "session",
@@ -179,9 +201,11 @@ export async function connectChannel(channelId: string): Promise<void> {
     if (!agent) {
       // Staying silent beats improvising: this number has no agent configured,
       // and a stranger should not get a machine-generated apology either.
-      console.warn(
-        `[${channelId}] no agent for ${peerJid} — set a default agent on the channel`
-      )
+      log.warn("channel.message.ignored", {
+        channelId,
+        sessionId: session.id,
+        reason: "no_agent_assigned",
+      })
       channelBus.emit(channelId, {
         type: "status",
         status: channelStatus(channelId),
@@ -217,25 +241,20 @@ export async function connectChannel(channelId: string): Promise<void> {
             if (text.trim()) await thread.post(text)
             if (replyAudio?.byteLength) {
               // Audio can't carry a caption, so this is necessarily a second
-              // message. It arrives as a playable attachment, not a ptt bubble —
-              // the adapter never sets ptt:true and exposes no raw socket.
-              await thread.post({
-                markdown: "",
-                files: [
-                  {
-                    data: replyAudio,
-                    filename: "reply.ogg",
-                    mimeType: "audio/ogg",
-                  },
-                ],
-              })
+              // message after the text response.
+              await sendWhatsAppVoiceNote(adapter, thread.id, replyAudio)
             }
           },
         },
       })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
-      console.error(`[${channelId}] pipeline failed:`, detail)
+      log.error("channel.pipeline.failed", {
+        channelId,
+        sessionId: session.id,
+        agentId: agent.id,
+        detail,
+      })
       await thread
         .post("Sorry — something went wrong on my side. Could you try again?")
         .catch(() => {})
@@ -248,20 +267,30 @@ export async function connectChannel(channelId: string): Promise<void> {
   await bot.initialize()
   try {
     await adapter.connect()
+    log.info("channel.connect.completed", { channelId })
   } catch (error) {
     connections.delete(channelId)
     const detail = error instanceof Error ? error.message : String(error)
     setStatus(channelId, "disconnected", { error: detail })
+    log.error("channel.connect.failed", { channelId, error })
     throw error
   }
 }
 
 export async function disconnectChannel(channelId: string): Promise<void> {
   const conn = connections.get(channelId)
-  if (!conn) return
+  if (!conn) {
+    log.debug("channel.disconnect.skipped", {
+      channelId,
+      reason: "not_connected",
+    })
+    return
+  }
+  log.info("channel.disconnect.started", { channelId })
   connections.delete(channelId)
   await conn.adapter.disconnect().catch(() => {})
   setStatus(channelId, "disconnected")
+  log.info("channel.disconnect.completed", { channelId })
 }
 
 /**
@@ -278,8 +307,7 @@ export function reconnectPairedChannels() {
     if (channel.status === "disconnected") continue
     if (!existsSync(`${paths.waAuth(channel.id)}/creds.json`)) continue
     connectChannel(channel.id).catch((error) => {
-      const detail = error instanceof Error ? error.message : String(error)
-      console.warn(`[${channel.id}] could not resume: ${detail}`)
+      log.warn("channel.reconnect.failed", { channelId: channel.id, error })
     })
   }
 }

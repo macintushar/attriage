@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { env } from "./env"
 import { spawnInSession } from "./sandbox"
 import type { AgentRecord, AgentStep, SessionRecord } from "./types"
+import { log } from "./logger"
 
 export interface TurnResult {
   text: string
@@ -147,13 +148,93 @@ export function createPerseverationGuard(
   }
 }
 
-export function writeSystemPrompt(session: SessionRecord, agent: AgentRecord) {
+/** Sarvam language codes → the name to actually say in the prompt. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  "bn-IN": "Bengali",
+  "en-IN": "English",
+  "gu-IN": "Gujarati",
+  "hi-IN": "Hindi",
+  "kn-IN": "Kannada",
+  "ml-IN": "Malayalam",
+  "mr-IN": "Marathi",
+  "od-IN": "Odia",
+  "pa-IN": "Punjabi",
+  "ta-IN": "Tamil",
+  "te-IN": "Telugu",
+  "ur-IN": "Urdu",
+  "as-IN": "Assamese",
+  "ks-IN": "Kashmiri",
+  "kok-IN": "Konkani",
+  "mai-IN": "Maithili",
+  "mni-IN": "Manipuri",
+  "ne-IN": "Nepali",
+  "sa-IN": "Sanskrit",
+  "sat-IN": "Santali",
+  "sd-IN": "Sindhi",
+  "doi-IN": "Dogri",
+  "brx-IN": "Bodo",
+}
+
+export function languageName(code: string | null | undefined): string | null {
+  if (!code || code === "auto" || code === "unknown") return null
+  return LANGUAGE_NAMES[code] ?? null
+}
+
+export function writeSystemPrompt(
+  session: SessionRecord,
+  agent: AgentRecord,
+  detectedLanguage?: string | null
+) {
   mkdirSync(session.workdir, { recursive: true })
-  const parts = [agent.systemPrompt.trim()]
+  writeFileSync(
+    `${session.workdir}/system-prompt.md`,
+    buildSystemPrompt(agent, detectedLanguage)
+  )
+}
+
+/**
+ * Platform behavior that applies even to agents created before the prompt
+ * builder learned about a language. The conversation history is useful context,
+ * but must never pin the reply language to an earlier turn.
+ *
+ * `detectedLanguage` is what STT identified for *this* turn's voice note. The
+ * file is rewritten before every turn, so naming it here is a per-turn fact,
+ * not a standing instruction — and it is the only signal strong enough to beat
+ * a conversation history full of the previous language. Without it, a caller
+ * who spoke Tamil for five turns and then switched to Kannada kept getting
+ * Tamil back, because everything in the model's context still said Tamil.
+ */
+export function buildSystemPrompt(
+  agent: AgentRecord,
+  detectedLanguage?: string | null
+): string {
+  const language = [
+    "## Language for each reply",
+    "",
+    "Determine the language of the latest user message independently on every turn.",
+    "Reply in that language, including languages not named elsewhere in this prompt.",
+    "If the user switches languages, switch immediately. The latest user message",
+    "overrides the language used earlier in the conversation. Mirror mixed-language",
+    "messages naturally.",
+  ]
+
+  const name = languageName(detectedLanguage)
+  if (name) {
+    language.push(
+      "",
+      `Speech-to-text identified the latest voice message as **${name}** (\`${detectedLanguage}\`).`,
+      `Reply in ${name}, even if every earlier turn in this conversation was in a`,
+      "different language. Do not carry the previous language forward.",
+      "If the transcript itself is plainly in some other language, trust the",
+      "transcript — the detected label is a hint, not an override."
+    )
+  }
+
+  const parts = [agent.systemPrompt.trim(), language.join("\n")]
   if (agent.goal.trim()) {
     parts.push(`\n## Your objective\n\n${agent.goal.trim()}`)
   }
-  writeFileSync(`${session.workdir}/system-prompt.md`, `${parts.join("\n")}\n`)
+  return `${parts.filter(Boolean).join("\n\n")}\n`
 }
 
 /**
@@ -168,45 +249,58 @@ export async function runTurn(
   agent: AgentRecord,
   userText: string,
   onStep: (step: AgentStep) => void,
-  onText?: (delta: string) => void
+  onText?: (delta: string) => void,
+  detectedLanguage?: string | null
 ): Promise<TurnResult> {
-  writeSystemPrompt(session, agent)
+  const turnStartedAt = performance.now()
+  log.info("agent.turn.started", {
+    sessionId: session.id,
+    agentId: agent.id,
+    provider: env.provider,
+    model: env.model,
+    inputChars: userText.length,
+  })
+  writeSystemPrompt(session, agent, detectedLanguage)
 
   // The pm project dir, not /workspace: a small model reaches for relative
   // paths (`cat .polymetrics/...`, bare `pm` commands), and every one of them
   // must land in the project. Pi still picks up /workspace/.pi via
   // PI_CODING_AGENT_DIR, so APPEND_SYSTEM.md and skills are unaffected —
   // smoke.sh's injection check runs pi from this cwd and passes.
-  const proc = spawnInSession(session, [
-    "pi",
-    "-p",
-    "--mode",
-    "json",
-    // Without --approve, Pi's non-interactive modes silently ignore
-    // project-local config (skills, settings) and the run looks mysteriously dumb.
-    "--approve",
-    "--provider",
-    env.provider,
-    "--model",
-    env.model,
-    "--session-dir",
-    "/workspace/.pi/sessions",
-    "--session-id",
-    session.id,
-    "--tools",
-    "bash,read,write,ls",
-    "--skill",
-    "/workspace/skills",
-    // An explicit --append-system-prompt OVERRIDES Pi's discovery of
-    // .pi/APPEND_SYSTEM.md, so the memory protocol must be passed here too —
-    // protocol first, then the agent's own prompt. Dropping the first flag
-    // silently disables memory for every turn that goes through this runner.
-    "--append-system-prompt",
-    "/workspace/.pi/APPEND_SYSTEM.md",
-    "--append-system-prompt",
-    "/workspace/system-prompt.md",
-    userText,
-  ], "/workspace/project")
+  const proc = spawnInSession(
+    session,
+    [
+      "pi",
+      "-p",
+      "--mode",
+      "json",
+      // Without --approve, Pi's non-interactive modes silently ignore
+      // project-local config (skills, settings) and the run looks mysteriously dumb.
+      "--approve",
+      "--provider",
+      env.provider,
+      "--model",
+      env.model,
+      "--session-dir",
+      "/workspace/.pi/sessions",
+      "--session-id",
+      session.id,
+      "--tools",
+      "bash,read,write,ls",
+      "--skill",
+      "/workspace/skills",
+      // An explicit --append-system-prompt OVERRIDES Pi's discovery of
+      // .pi/APPEND_SYSTEM.md, so the memory protocol must be passed here too —
+      // protocol first, then the agent's own prompt. Dropping the first flag
+      // silently disables memory for every turn that goes through this runner.
+      "--append-system-prompt",
+      "/workspace/.pi/APPEND_SYSTEM.md",
+      "--append-system-prompt",
+      "/workspace/system-prompt.md",
+      userText,
+    ],
+    "/workspace/project"
+  )
 
   const timer = setTimeout(() => proc.kill(), env.turnTimeoutMs)
 
@@ -251,6 +345,12 @@ export async function runTurn(
             startedAt.set(id, Date.now())
             guard.start(id, step.tool, event.args)
             onStep(step)
+            log.info("agent.tool.started", {
+              sessionId: session.id,
+              agentId: agent.id,
+              tool: step.tool,
+              toolCallId: id,
+            })
             break
           }
           case "tool_execution_end": {
@@ -275,6 +375,14 @@ export async function runTurn(
                     `(last: "${existing.label.slice(0, 80)}") — aborted to avoid a silent timeout`
               proc.kill()
             }
+            log.info("agent.tool.completed", {
+              sessionId: session.id,
+              agentId: agent.id,
+              tool: done.tool,
+              toolCallId: id,
+              status: done.status,
+              durationMs: done.ms,
+            })
             break
           }
           case "message_update": {
@@ -330,7 +438,7 @@ export async function runTurn(
       // `error && !text` guard and be delivered as silence — which is exactly
       // the failure this branch exists to prevent. It happens for real when the
       // turn timeout kills pi mid-tool-loop and it writes nothing to stderr.
-      return {
+      const result = {
         text: "",
         steps: [...steps.values()],
         error:
@@ -339,13 +447,25 @@ export async function runTurn(
           stderr.trim().slice(0, 800) ||
           `pi produced no reply (exit ${code})`,
       }
+      log.error("agent.turn.failed", {
+        sessionId: session.id,
+        agentId: agent.id,
+        durationMs: Math.round(performance.now() - turnStartedAt),
+        error: result.error,
+      })
+      return result
     }
-    return {
-      text,
-      steps: [...steps.values()],
+    const error = abortError || providerError
+    log.info("agent.turn.completed", {
+      sessionId: session.id,
+      agentId: agent.id,
+      durationMs: Math.round(performance.now() - turnStartedAt),
+      outputChars: text.length,
+      toolCalls: steps.size,
       costUsd,
-      error: abortError || providerError,
-    }
+      error,
+    })
+    return { text, steps: [...steps.values()], costUsd, error }
   } finally {
     clearTimeout(timer)
   }

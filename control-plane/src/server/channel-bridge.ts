@@ -2,6 +2,8 @@ import type { DirectMessageHandler, MessageHandler } from "chat"
 import type { BaileysAdapter } from "chat-adapter-baileys"
 import type { ConnectionState } from "baileys"
 
+import { audioDuration } from "./audio"
+
 type WhatsAppBot = {
   onDirectMessage: (handler: DirectMessageHandler) => void
   onNewMessage: (pattern: RegExp, handler: MessageHandler) => void
@@ -14,6 +16,15 @@ type AdapterInternals = {
     ev: {
       on: (event: "connection.update", listener: ConnectionListener) => void
     }
+    sendMessage: (
+      jid: string,
+      message: {
+        audio: Buffer
+        mimetype: "audio/ogg; codecs=opus"
+        ptt: true
+        seconds?: number
+      }
+    ) => Promise<unknown>
   } | null
   _createSocket: () => Promise<void>
 }
@@ -62,6 +73,40 @@ export function observeBaileysLifecycle(
 export function phoneFromWhatsAppJid(jid: string | undefined) {
   const phone = jid?.split("@", 1)[0]?.split(":", 1)[0]
   return phone ? `+${phone}` : undefined
+}
+
+/**
+ * Send synthesized speech as an actual WhatsApp voice note.
+ *
+ * The adapter's generic file API deliberately omits Baileys' `ptt` flag. Using
+ * it here made the text half of a reply succeed while the audio half could be
+ * dropped or rendered as an ordinary file. Keep this provider-specific detail
+ * beside the other adapter compatibility shims.
+ */
+export async function sendWhatsAppVoiceNote(
+  adapter: BaileysAdapter,
+  threadId: string,
+  audio: Buffer
+) {
+  if (!audio.byteLength) throw new Error("cannot send an empty voice note")
+
+  const internals = adapter as unknown as AdapterInternals
+  if (!internals._socket) {
+    throw new Error("WhatsApp socket is not connected")
+  }
+
+  if (audio.toString("latin1", 0, 4) !== "OggS") {
+    throw new Error("voice note is not an Ogg/Opus attachment")
+  }
+
+  const { jid } = adapter.decodeThreadId(threadId)
+  const seconds = audioDuration(audio)
+  await internals._socket.sendMessage(jid, {
+    audio,
+    mimetype: "audio/ogg; codecs=opus",
+    ptt: true,
+    ...(seconds ? { seconds } : {}),
+  })
 }
 
 export function disconnectStatusCode(error: unknown) {
