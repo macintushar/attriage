@@ -56,6 +56,13 @@ Baked-in config:
 - `/opt/sandbox/skills/talking-to-people.md` — conversation quality: cadence,
   language and register mirroring, transcription repair, distress and emergency
   handling, and how to close a conversation.
+- `/opt/sandbox/skills/remembering.md` — durable memory: how to maintain
+  `MEMORY.md` and the append-only `memory_facts` warehouse table.
+- `/opt/sandbox/append-system.md` — the memory protocol, copied to
+  `.pi/APPEND_SYSTEM.md` every container start so Pi appends it to the system
+  prompt on every turn.
+- `/opt/sandbox/memory-template.md` — the empty shape of `MEMORY.md`, seeded
+  once per session and never overwritten after that.
 - `/opt/pm/skills/` — pm's own generated per-connector guides.
 
 ## Running
@@ -108,11 +115,16 @@ Nothing sensitive is baked into a layer.
 ```
 /workspace
 ├── .pi/
+│   ├── APPEND_SYSTEM.md     memory protocol — refreshed from the image each start
 │   ├── models.json          seeded from the image on first start
-│   └── sessions/            Pi's JSONL transcripts — multi-turn memory
+│   ├── sessions/            Pi's JSONL transcripts — multi-turn memory
+│   └── skills/              remembering.md — auto-discovered by Pi
+├── memory/
+│   └── MEMORY.md            durable peer memory — seeded once, agent-maintained
 ├── project/                 the pm project ($PM_PROJECT_DIR)
 │   └── .polymetrics/
 │       ├── warehouse/*.jsonl    tables — the agent writes these directly
+│       │                        (memory_facts.jsonl is the memory ledger)
 │       └── outbox/              reverse-ETL receipts
 ├── skills/                  pm-workflow.md + generated connector guides
 └── staging/                 agent scratch space

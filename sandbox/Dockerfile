@@ -59,6 +59,13 @@ COPY models.json   /opt/sandbox/models.json
 COPY skills/       /opt/sandbox/skills/
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# The memory system. append-system.md is the protocol the agent is always told
+# about; memory-template.md is the empty shape of a person's memory file, which
+# the entrypoint copies into a session only once. Baked in, so a session cannot
+# lose or corrupt them — a fresh container start always restores the protocol.
+COPY append-system.md   /opt/sandbox/append-system.md
+COPY memory-template.md /opt/sandbox/memory-template.md
+
 RUN chmod +x /usr/local/bin/entrypoint.sh \
  && useradd --uid 10001 --create-home --shell /bin/bash agent \
  && mkdir -p /workspace \
