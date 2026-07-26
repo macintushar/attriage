@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "sarvam": {
+      "baseUrl": "http://host.docker.internal:8788/v1",
+      "api": "openai-completions",
+      "apiKey": "via-shim",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "sarvam-105b",
+          "name": "Sarvam 105B",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 8192,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    },
+    "mock": {
+      "baseUrl": "http://host.docker.internal:8899/v1",
+      "api": "openai-completions",
+      "apiKey": "mock",
+      "compat": {
+        "supportsDeveloperRole": false,
+        "supportsReasoningEffort": false
+      },
+      "models": [
+        {
+          "id": "mock-105b",
+          "name": "Mock (offline test)",
+          "reasoning": false,
+          "input": ["text"],
+          "contextWindow": 128000,
+          "maxTokens": 8192,
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+        }
+      ]
+    }
+  }
+}

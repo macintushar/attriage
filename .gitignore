@@ -1,0 +1,10 @@
+node_modules
+.DS_Store
+.env
+.env.*
+!.env.example
+
+# Backend state: SQLite db, per-session sandbox workspaces, WhatsApp auth.
+# control-plane/data/wa/ holds live WhatsApp credentials — never commit it.
+data/
+control-plane/data/
