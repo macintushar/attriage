@@ -41,6 +41,7 @@ import { dockerAvailable, startReaper, stopSession } from "./sandbox"
 import { startSarvamShim } from "./sarvam-shim"
 import { backfillAudioDurations } from "./audio-backfill"
 import type { AgentRecord, ChannelKind, ChannelRecord } from "./types"
+import { log, withLogContext } from "./logger"
 
 const STARTED_KEY = Symbol.for("sarvam-control-plane.backend-started")
 const globals = globalThis as typeof globalThis & {
@@ -53,6 +54,11 @@ const globals = globalThis as typeof globalThis & {
  */
 function ensureBackendStarted() {
   if (globals[STARTED_KEY]) return
+  log.info("backend.starting", {
+    provider: env.provider,
+    model: env.model,
+    sandboxImage: env.sandboxImage,
+  })
   ensureDataDirs()
   startReaper()
   startSarvamShim()
@@ -61,8 +67,9 @@ function ensureBackendStarted() {
   void backfillAudioDurations()
 
   if (!env.sarvamKey) {
-    console.warn("⚠️  SARVAM_API_KEY is not set — STT/TTS/agent will fail")
+    log.warn("backend.sarvam_key_missing")
   }
+  log.info("backend.started")
 }
 
 const json = (data: unknown, status = 200) => Response.json(data, { status })
@@ -201,7 +208,7 @@ async function readInput(request: Request): Promise<PipelineInput | Response> {
  * Handles the application's `/api/*` surface inside the TanStack Start server.
  * `path` is relative to `/api` (for example `/agents`).
  */
-export async function handleBackendRequest(
+async function dispatchBackendRequest(
   request: Request,
   path: string
 ): Promise<Response> {
@@ -644,4 +651,44 @@ export async function handleBackendRequest(
   }
 
   return json({ error: "not found" }, 404)
+}
+
+/**
+ * Logs every REST request at the shared boundary. Body contents and headers are
+ * deliberately excluded: prompts, messages, cookies, and credentials must not
+ * leak into application logs.
+ */
+export async function handleBackendRequest(
+  request: Request,
+  path: string
+): Promise<Response> {
+  const requestId = request.headers.get("x-request-id") || crypto.randomUUID()
+  const startedAt = performance.now()
+  return withLogContext({ requestId }, async () => {
+    log.info("http.request.started", {
+      method: request.method,
+      path,
+      contentType: request.headers.get("content-type") ?? undefined,
+      contentLength: request.headers.get("content-length") ?? undefined,
+    })
+    try {
+      const response = await dispatchBackendRequest(request, path)
+      response.headers.set("x-request-id", requestId)
+      log.info("http.request.completed", {
+        method: request.method,
+        path,
+        status: response.status,
+        durationMs: Math.round(performance.now() - startedAt),
+      })
+      return response
+    } catch (error) {
+      log.error("http.request.failed", {
+        method: request.method,
+        path,
+        durationMs: Math.round(performance.now() - startedAt),
+        error,
+      })
+      throw error
+    }
+  })
 }

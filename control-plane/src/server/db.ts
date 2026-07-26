@@ -11,6 +11,7 @@ import type {
   MessageKind,
   SessionRecord,
 } from "./types"
+import { log } from "./logger"
 
 ensureDataDirs()
 
@@ -139,9 +140,9 @@ function migrateAgentOwnedChannels() {
   db.exec("DROP TABLE channels_legacy")
   db.exec("DROP TABLE sessions_legacy")
   db.exec("PRAGMA foreign_keys = ON")
-  console.log(
-    `migrated ${agents.length} agent-owned channel(s) to standalone channels`
-  )
+  log.info("database.migration.agent_channels_completed", {
+    agents: agents.length,
+  })
 }
 
 function createSchema() {
@@ -270,7 +271,7 @@ function repairSessionReferences() {
     db.exec(`ALTER TABLE ${table}_rebuilt RENAME TO ${table}`)
     db.exec("PRAGMA legacy_alter_table = OFF")
     db.exec("PRAGMA foreign_keys = ON")
-    console.log(`repaired ${table}.sessionId foreign key (${rows} rows kept)`)
+    log.info("database.migration.session_reference_repaired", { table, rows })
   }
 }
 

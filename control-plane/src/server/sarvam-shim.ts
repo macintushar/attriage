@@ -2,6 +2,7 @@ import { createServer } from "node:http"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 
 import { env, requireSarvamKey } from "./env"
+import { log } from "./logger"
 
 /**
  * A local OpenAI-compatible endpoint that adapts Pi's requests to Sarvam's.
@@ -125,7 +126,9 @@ export function startSarvamShim(): Server {
   })
   server.on("error", (error: NodeJS.ErrnoException) => {
     // A second dev server may already own the private shim port.
-    if (error.code !== "EADDRINUSE") console.error("Sarvam shim failed:", error)
+    if (error.code !== "EADDRINUSE") {
+      log.error("sarvam_shim.failed", { error })
+    }
   })
   server.listen(env.shimPort, "0.0.0.0")
   globals[SHIM_KEY] = server

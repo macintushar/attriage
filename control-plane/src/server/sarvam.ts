@@ -5,6 +5,7 @@ import type { Readable } from "node:stream"
 
 import { oggOpusDuration } from "./audio"
 import { requireSarvamKey } from "./env"
+import { log } from "./logger"
 
 const BASE = "https://api.sarvam.ai"
 
@@ -46,12 +47,35 @@ async function call(
   init: RequestInit,
   attempt = 0
 ): Promise<Response> {
-  const res = await fetch(`${BASE}${path}`, {
-    ...init,
-    headers: {
-      "api-subscription-key": requireSarvamKey(),
-      ...(init.headers ?? {}),
-    },
+  const startedAt = performance.now()
+  log.info("sarvam.request.started", {
+    path,
+    method: init.method ?? "GET",
+    attempt,
+  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      ...init,
+      headers: {
+        "api-subscription-key": requireSarvamKey(),
+        ...(init.headers ?? {}),
+      },
+    })
+  } catch (error) {
+    log.error("sarvam.request.failed", {
+      path,
+      attempt,
+      durationMs: Math.round(performance.now() - startedAt),
+      error,
+    })
+    throw error
+  }
+  log.info("sarvam.request.completed", {
+    path,
+    attempt,
+    status: res.status,
+    durationMs: Math.round(performance.now() - startedAt),
   })
 
   // Starter tier is 40 rpm on chat and 30 rpm on bulbul:v3, so 429s are a
@@ -59,12 +83,18 @@ async function call(
   if (res.status === 429 && attempt < 3) {
     const wait =
       Number(res.headers.get("retry-after") ?? 0) * 1000 || 2 ** attempt * 1000
+    log.warn("sarvam.request.retrying", { path, attempt, waitMs: wait })
     await delay(wait)
     return call(path, init, attempt + 1)
   }
 
   if (!res.ok) {
     const body = await res.text().catch(() => "")
+    log.error("sarvam.response.error", {
+      path,
+      status: res.status,
+      bodyChars: body.length,
+    })
     const hint = res.status === 403 ? " (403 = bad/missing SARVAM_API_KEY)" : ""
     // The body is the only thing that says *why* a 400 happened, and this
     // message is all that reaches the trace and the log. Omitting it turned a

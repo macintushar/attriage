@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 
 import { oggOpusDuration } from "./audio"
 import { messagesMissingAudioDuration, setMessageAudioSeconds } from "./db"
+import { log } from "./logger"
 
 /**
  * Recovers durations for voice notes recorded before they were stored.
@@ -33,7 +34,10 @@ export async function backfillAudioDurations(limit = 500): Promise<number> {
   }
 
   if (filled) {
-    console.log(`measured ${filled} historical voice note(s)`)
+    log.info("audio.backfill.completed", {
+      measured: filled,
+      pending: pending.length,
+    })
   }
   return filled
 }

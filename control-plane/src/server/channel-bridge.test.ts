@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 
+import { oggOpusFixture } from "./audio.test-fixture"
 import {
   disconnectStatusCode,
   observeBaileysLifecycle,
   phoneFromWhatsAppJid,
   registerWhatsAppMessageHandler,
+  sendWhatsAppVoiceNote,
 } from "./channel-bridge"
 
 describe("registerWhatsAppMessageHandler", () => {
@@ -105,5 +107,58 @@ describe("Baileys connection helpers", () => {
   it("reads Boom-compatible disconnect status codes", () => {
     expect(disconnectStatusCode({ output: { statusCode: 401 } })).toBe(401)
     expect(disconnectStatusCode(new Error("closed"))).toBeUndefined()
+  })
+})
+
+describe("sendWhatsAppVoiceNote", () => {
+  it("sends an ogg attachment as a push-to-talk voice note", async () => {
+    const sendMessage = vi.fn().mockResolvedValue({ key: { id: "reply" } })
+    const adapter = {
+      _socket: { sendMessage },
+      decodeThreadId: vi
+        .fn()
+        .mockReturnValue({ jid: "919876543210@s.whatsapp.net" }),
+    }
+    const audio = oggOpusFixture({ seconds: 3 })
+
+    await sendWhatsAppVoiceNote(
+      adapter as unknown as Parameters<typeof sendWhatsAppVoiceNote>[0],
+      "channel-patient:peer",
+      audio
+    )
+
+    expect(adapter.decodeThreadId).toHaveBeenCalledWith("channel-patient:peer")
+    expect(sendMessage).toHaveBeenCalledWith("919876543210@s.whatsapp.net", {
+      audio,
+      mimetype: "audio/ogg; codecs=opus",
+      ptt: true,
+      seconds: 3,
+    })
+  })
+
+  it("fails clearly instead of silently dropping audio when disconnected", async () => {
+    await expect(
+      sendWhatsAppVoiceNote(
+        {
+          _socket: null,
+        } as unknown as Parameters<typeof sendWhatsAppVoiceNote>[0],
+        "channel-patient:peer",
+        oggOpusFixture({ seconds: 3 })
+      )
+    ).rejects.toThrow("WhatsApp socket is not connected")
+  })
+
+  it("rejects mislabeled bytes before attempting an upload", async () => {
+    const sendMessage = vi.fn()
+    await expect(
+      sendWhatsAppVoiceNote(
+        {
+          _socket: { sendMessage },
+        } as unknown as Parameters<typeof sendWhatsAppVoiceNote>[0],
+        "channel-patient:peer",
+        Buffer.from("not ogg")
+      )
+    ).rejects.toThrow("not an Ogg/Opus attachment")
+    expect(sendMessage).not.toHaveBeenCalled()
   })
 })

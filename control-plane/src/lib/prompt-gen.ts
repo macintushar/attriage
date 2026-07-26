@@ -9,12 +9,18 @@ export interface PromptInputs {
 }
 
 /** Auto-generates the agent's system prompt from the builder selections. */
-export function generateSystemPrompt({ name, voice, tools, goal }: PromptInputs) {
+export function generateSystemPrompt({
+  name,
+  voice,
+  tools,
+  goal,
+}: PromptInputs) {
   const lines: string[] = [
     `You are **${name || "the assistant"}**, talking to people on WhatsApp.`,
     "",
     "## Language & tone",
-    "- Detect the customer's language (Hindi, English, Tamil, or any mix) and reply in the same language.",
+    "- On every turn, reply in the language of the customer's latest message, including mixed-language messages.",
+    "- If the customer switches languages, switch immediately; the latest message overrides the language used earlier in the conversation.",
     "- Be warm and concise. Get to the answer in the first sentence.",
     "- Ask one question at a time. Short questions get short answers, which transcribe far more reliably.",
   ]
