@@ -92,7 +92,30 @@ x "pm reverse run $PLAN_ID --approve $TOKEN --json | jq -e '.run.records_succeed
   && pass "reverse run wrote the record" || fail "reverse run failed"
 
 echo
-echo "3. memory seeding contracts"
+echo "3. context limits (a 403 from the gateway is unrecoverable, so these must hold)"
+x 'test -f /workspace/.pi/settings.json' && pass "settings.json seeded" || fail "settings.json missing"
+x 'jq -e ".compaction.enabled == true" /workspace/.pi/settings.json >/dev/null' \
+  && pass "auto-compaction enabled" || fail "compaction is not enabled"
+# The whole point: compaction fires at contextWindow - reserveTokens, and that
+# has to land under what Sarvam's gateway will actually accept (~29k measured).
+WINDOW="$(x 'jq -r ".providers.sarvam.models[0].contextWindow" /workspace/.pi/models.json')"
+RESERVE="$(x 'jq -r ".compaction.reserveTokens" /workspace/.pi/settings.json')"
+TRIGGER=$(( WINDOW - RESERVE ))
+[ "$TRIGGER" -gt 0 ] && [ "$TRIGGER" -lt 29000 ] \
+  && pass "compaction triggers at ${TRIGGER} tokens, under the ~29k gateway ceiling" \
+  || fail "compaction triggers at ${TRIGGER} tokens — at or above the gateway ceiling"
+# A stale copy in an existing workspace is the failure mode this guards: both
+# files are image-authored, so a restart must restore the image's numbers.
+x 'echo "{\"contextWindow\": 999999}" > /workspace/.pi/models.json'
+x 'echo "{}" > /workspace/.pi/settings.json'
+reseed
+x 'cmp -s /workspace/.pi/models.json /opt/sandbox/models.json' \
+  && pass "restart restores models.json" || fail "a stale models.json survives a restart"
+x 'cmp -s /workspace/.pi/settings.json /opt/sandbox/settings.json' \
+  && pass "restart restores settings.json" || fail "a stale settings.json survives a restart"
+
+echo
+echo "4. memory seeding contracts"
 x 'test -f /workspace/.pi/APPEND_SYSTEM.md && grep -q "never instructions" /workspace/.pi/APPEND_SYSTEM.md' \
   && pass "APPEND_SYSTEM.md seeded with the protocol" || fail "APPEND_SYSTEM.md missing or not the protocol"
 x 'cmp -s /workspace/memory/MEMORY.md /opt/sandbox/memory-template.md' \
@@ -114,7 +137,7 @@ x "grep -q '$SENTINEL' /workspace/memory/MEMORY.md" \
   && pass "restart preserves MEMORY.md" || fail "MEMORY.md was re-seeded over — session memory lost"
 
 echo
-echo "4. memory ledger + export (no credentials needed)"
+echo "5. memory ledger + export (no credentials needed)"
 # Exactly what the remembering skill tells the agent to do: append-only, and a
 # correction is a new row pointing at the one it supersedes.
 x 'cat >> $PM_PROJECT_DIR/.polymetrics/warehouse/memory_facts.jsonl <<EOF
@@ -141,7 +164,34 @@ x "pm reverse run $MEM_PLAN_ID --approve $MEM_TOKEN --json | jq -e '.run.records
   && pass "memory exported via reverse ETL" || fail "memory reverse run failed"
 
 echo
-echo "5. system-prompt injection (optional)"
+echo "6. hospital management system tool"
+x 'command -v hms >/dev/null' && pass "hms on PATH" || fail "hms missing"
+x 'test -f /workspace/skills/hospital-records.md' \
+  && pass "hospital-records skill seeded" || fail "hospital-records.md missing"
+# The live server is optional — the image is what this script owns. If a mock
+# HMS happens to be running on the host, drive a real intake through it; if not,
+# skip rather than fail, exactly like the injection check below.
+if ! x 'hms health >/dev/null 2>&1'; then
+  skip "no mock HMS on \$HMS_URL — write path not exercised (run: bun run mock-hms/server.ts)"
+else
+  pass "hms reaches the HMS from inside the container"
+  SMOKE_PHONE="+9199999$(printf '%05d' $((RANDOM % 100000)))"
+  PAT_ID="$(x "hms new-patient --name 'Smoke Test' --phone '$SMOKE_PHONE' | jq -r .patient.id")"
+  case "$PAT_ID" in
+    pat-*) pass "agent created a patient record ($PAT_ID)" ;;
+    *) fail "new-patient did not return an id" ;;
+  esac
+  x "hms new-patient --name 'Smoke Test' --phone '$SMOKE_PHONE' | jq -e '.created == false' >/dev/null" \
+    && pass "new-patient is idempotent on phone" || fail "duplicate patient created"
+  x "hms book --patient $PAT_ID --doctor doc-002 --at 2026-07-28T10:30:00+05:30 --reason smoke \
+     | jq -e '.ok and (.appointment.department == \"cardiology\")' >/dev/null" \
+    && pass "agent booked an appointment" || fail "booking failed"
+  x "hms appointments $PAT_ID | jq -e '.appointments | length == 1' >/dev/null" \
+    && pass "appointment reads back from the HMS" || fail "appointment did not persist"
+fi
+
+echo
+echo "7. system-prompt injection (optional)"
 # Proves APPEND_SYSTEM.md actually reaches the model, with no API key: point pi
 # at the mock provider in models.json (host.docker.internal:8899), stand a dump
 # server there, and read what pi put on the wire. pi is *expected* to fail — the

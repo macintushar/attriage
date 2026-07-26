@@ -11,10 +11,19 @@ mkdir -p "$PI_DIR/sessions" "$PROJECT_DIR" /workspace/staging /workspace/skills 
          /workspace/memory
 
 # Pi's Sarvam provider config. Copied rather than symlinked so a session can be
-# inspected or hand-edited without mutating the image.
-if [ ! -f "$PI_DIR/models.json" ]; then
-  cp /opt/sandbox/models.json "$PI_DIR/models.json"
-fi
+# inspected without mutating the image, and overwritten rather than preserved:
+# `contextWindow` here is what makes compaction fire before the gateway starts
+# refusing requests. A session still holding an older, too-large window would go
+# on believing it had room and die the same way the first one did.
+cp /opt/sandbox/models.json "$PI_DIR/models.json"
+
+# Compaction settings, overwritten every start rather than preserved. A session
+# whose context has already outgrown what the gateway accepts cannot recover on
+# its own — every turn resends the whole history and gets the same 403 — so the
+# thresholds have to be the image's current ones, not whatever was in force when
+# the session started. $PI_DIR is Pi's *global* scope, so this needs no project
+# trust; a `.pi/settings.json` would be ignored under `-p`.
+cp /opt/sandbox/settings.json "$PI_DIR/settings.json"
 
 # Agent-facing docs: our workflow guide plus pm's generated per-connector skills.
 # Ours are overwritten, not preserved (`-r`, not `-rn`): they are authored in the

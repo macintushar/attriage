@@ -56,7 +56,9 @@ COPY --from=pm-build /out/pm-skills /opt/pm/skills
 COPY --from=pm-build /pm-commit     /opt/pm/commit
 
 COPY models.json   /opt/sandbox/models.json
+COPY settings.json /opt/sandbox/settings.json
 COPY skills/       /opt/sandbox/skills/
+COPY bin/hms       /usr/local/bin/hms
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # The memory system. append-system.md is the protocol the agent is always told
@@ -66,7 +68,7 @@ COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY append-system.md   /opt/sandbox/append-system.md
 COPY memory-template.md /opt/sandbox/memory-template.md
 
-RUN chmod +x /usr/local/bin/entrypoint.sh \
+RUN chmod +x /usr/local/bin/entrypoint.sh /usr/local/bin/hms \
  && useradd --uid 10001 --create-home --shell /bin/bash agent \
  && mkdir -p /workspace \
  && chown agent:agent /workspace
@@ -78,6 +80,7 @@ ENV PI_CODING_AGENT_DIR=/workspace/.pi \
     PI_SKIP_VERSION_CHECK=1 \
     PM_PROJECT_DIR=/workspace/project \
     PM_SKILLS_DIR=/opt/pm/skills \
+    HMS_URL=http://host.docker.internal:8081 \
     HOME=/home/agent
 
 USER agent

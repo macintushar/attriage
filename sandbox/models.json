@@ -14,7 +14,8 @@
           "name": "Sarvam 105B",
           "reasoning": false,
           "input": ["text"],
-          "contextWindow": 128000,
+          "_contextWindowNote": "NOT the model's 128k window. Sarvam's Azure gateway rejects large requests with a bare `403 Forbidden` long before the model's real limit — measured at ~29k tokens of ASCII filler by scripts/probe-context-limit.ts, and observed killing a live session at ~46k. A 403 is not a context-overflow signal, so Pi cannot recover from it: it just fails every turn from then on, forever, because the whole history is resent each time. Compaction triggers at contextWindow - compaction.reserveTokens, so this number is what makes it fire in time. 32000 leaves margin for Indic text, which costs more bytes per token than the probe's ASCII.",
+          "contextWindow": 32000,
           "maxTokens": 8192,
           "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
         }

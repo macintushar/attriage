@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# `hms` — the agent's tool for the hospital management system.
+#
+# A thin curl wrapper, on purpose. The agent already has bash and jq, so the
+# tool surface it needs is a handful of verbs with flags it can guess from
+# `hms help`, not an SDK. Every command prints the server's JSON envelope
+# unchanged so the agent can pipe it straight into jq.
+#
+# HMS_URL points at the mock HMS. Inside the sandbox that is the host, so the
+# default assumes Docker's host gateway.
+set -euo pipefail
+
+HMS_URL="${HMS_URL:-http://host.docker.internal:8081}"
+
+usage() {
+  cat <<'EOF'
+hms — hospital management system
+
+  hms doctors [DEPARTMENT]              list doctors, optionally by department
+  hms find-patient PHONE                look up a patient by phone number
+  hms patients                          list every patient
+  hms new-patient --name N --phone P [--dob YYYY-MM-DD] [--age N] [--sex S]
+                  [--language L] [--notes T]
+                                        create a patient (idempotent on phone)
+  hms book --patient PAT_ID --doctor DOC_ID --at ISO8601 [--reason R]
+                                        book an appointment (--time, --when
+                                        are accepted for --at)
+  hms appointments [PAT_ID]             list appointments, optionally for one patient
+  hms health                            check the HMS is reachable
+
+Every command prints JSON: {"ok": true, ...} or {"ok": false, "error": "..."}.
+EOF
+}
+
+# No `-f`. curl's --fail throws away the response body on a 4xx, which is the
+# one case where the body is the whole point: the agent is told to branch on
+# `.ok`, and an empty stdout tells it nothing about what it got wrong. Print the
+# server's JSON either way, and let the exit code carry the failure.
+req() { # method path [json-body]
+  local method="$1" path="$2" body="${3:-}" out status
+  if [ -n "$body" ]; then
+    out="$(curl -sS -w '\n%{http_code}' -X "$method" "$HMS_URL$path" \
+             -H 'content-type: application/json' -d "$body")" || {
+      err "cannot reach the HMS at $HMS_URL"; return 1; }
+  else
+    out="$(curl -sS -w '\n%{http_code}' -X "$method" "$HMS_URL$path")" || {
+      err "cannot reach the HMS at $HMS_URL"; return 1; }
+  fi
+  status="${out##*$'\n'}"
+  printf '%s\n' "${out%$'\n'*}"
+  [ "$status" -lt 400 ]
+}
+
+# Errors go to stdout as the same {"ok": false} envelope the server sends, so
+# the agent never has to distinguish a client-side mistake from a server one.
+err() { jq -cn --arg e "$1" '{ok: false, error: $e}'; return 1; }
+
+# Query values need escaping, and the two that matter both look harmless: a
+# department like "internal medicine" makes a malformed URL, and a phone number's
+# leading `+` decodes server-side as a space, so the lookup quietly misses and
+# the patient gets registered twice.
+uri() { jq -rn --arg v "$1" '$v|@uri'; }
+
+# Collects --flag value pairs into a JSON object, so a missing optional flag is
+# simply an absent key rather than an empty string the server has to sniff for.
+#
+# Unknown flags are rejected by name rather than dropped. A dropped flag turns
+# into a confusing "field is required" from the server about a field the agent
+# thinks it just passed — which is precisely the loop a model cannot break out
+# of. `--at` vs `--time` is a coin-flip guess, so say which one is right.
+# Sets FLAGS_JSON rather than echoing it: a `$(flags_to_json …)` would capture
+# this function's error envelope into the caller's variable and discard it,
+# leaving the agent with a bare non-zero exit and no idea which flag was wrong.
+# $USAGE is the exact working form of the command being run, carried into every
+# error. Naming the valid flags is not enough on its own: told only that
+# `--patient` exists, the model supplied a patient's *name*, then a doctor's
+# name, then dropped to positional arguments and flailed. An error that shows
+# the whole command, values and all, is one it can copy.
+flags_to_json() { # allowed-csv flag value…
+  local allowed=",$1," out='{}' key; shift
+  FLAGS_JSON=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --*)
+        key="${1#--}"
+        case "$allowed" in
+          *",$key,"*) ;;
+          *) err "unknown flag --$key. Correct form: ${USAGE:-see \`hms help\`}"; return 1 ;;
+        esac
+        [ $# -ge 2 ] || { err "--$key needs a value. Correct form: ${USAGE:-see \`hms help\`}"; return 1; }
+        out="$(jq -cn --arg k "$key" --arg v "$2" --argjson o "$out" '$o + {($k): $v}')"
+        shift 2 ;;
+      *) err "'$1' is not a flag — every value needs one. Correct form: ${USAGE:-see \`hms help\`}"; return 1 ;;
+    esac
+  done
+  FLAGS_JSON="$out"
+}
+
+# Names the missing flag instead of echoing the server's wire-format field name,
+# which the agent has never seen and cannot act on.
+require() { # json flag…
+  local json="$1"; shift
+  for f in "$@"; do
+    [ "$(printf '%s' "$json" | jq -r --arg f "$f" '.[$f] // ""')" != "" ] \
+      || { err "missing required flag --$f. Correct form: ${USAGE:-see \`hms help\`}"; return 1; }
+  done
+  return 0
+}
+
+
+cmd="${1:-help}"; shift || true
+
+case "$cmd" in
+  help|-h|--help) usage ;;
+  health)   req GET /health ;;
+  doctors)  req GET "/doctors${1:+?department=$(uri "$1")}" ;;
+  patients) req GET /patients ;;
+  find-patient)
+    # No argument means "the person I am talking to", which is the only lookup
+    # the agent should normally need.
+    target="${1:-${HMS_PATIENT_CONTACT:-}}"
+    [ -n "$target" ] || { err "no patient contact known; pass one explicitly"; exit 1; }
+    req GET "/patients?phone=$(uri "$target")" ;;
+  new-patient)
+    USAGE='hms new-patient --name "Priya S" --age 34 --sex female'
+    flags_to_json "name,phone,dob,age,sex,language,notes" "$@" || exit 1
+    body="$FLAGS_JSON"
+    require "$body" name || exit 1
+    # Identity comes from the channel, never from the agent. Asked for a number
+    # it was never given, the model invents one that looks entirely real — first
+    # the example from its own skill file, then, once that was blocked, a fresh
+    # fake. So `--phone` is overridden rather than trusted whenever the platform
+    # knows who this is, and the override is reported so the agent sees it.
+    if [ -n "${HMS_PATIENT_CONTACT:-}" ]; then
+      body="$(printf '%s' "$body" | jq -c --arg p "$HMS_PATIENT_CONTACT" '. + {phone: $p}')"
+    fi
+    require "$body" phone || exit 1
+    req POST /patients "$body" ;;
+  book)
+    # Friendlier flag names than the wire format; remap here, not in the prompt.
+    # `--time`/`--when` are accepted as aliases for `--at` because they are what
+    # a model reaches for first, and a booking is too important to lose to a
+    # synonym.
+    USAGE='hms book --patient pat-xxxxxx --doctor doc-00N --at 2026-07-27T16:00:00+05:30 --reason "knee pain" (--patient is the id from `hms new-patient`, --doctor the id from `hms doctors`)'
+    flags_to_json "patient,doctor,at,time,when,reason" "$@" || exit 1
+    body="$(printf '%s' "$FLAGS_JSON" | jq -c '. + {at: (.at // .time // .when)}')"
+    require "$body" patient doctor at || exit 1
+    body="$(printf '%s' "$body" | jq -c '
+      {patient_id: .patient, doctor_id: .doctor, scheduled_at: .at, reason: .reason}
+      | with_entries(select(.value != null))')"
+    req POST /appointments "$body" ;;
+  appointments) req GET "/appointments${1:+?patient_id=$(uri "$1")}" ;;
+  *) echo "hms: unknown command '$cmd'" >&2; usage >&2; exit 2 ;;
+esac
