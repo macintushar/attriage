@@ -81,6 +81,72 @@ function textOf(message: {
     .trim()
 }
 
+/**
+ * Aborts a turn when the model repeats the exact same failing tool call.
+ *
+ * Observed with sarvam-105b: one turn re-ran an identical failing `cat` 438
+ * times, saw the error every time, and burned the whole 240s turn budget — the
+ * patient got silence. Three identical consecutive failures is already proof
+ * the model is not going to change course; killing pi then turns four minutes
+ * of dead air into an immediate, explainable error.
+ */
+export const PERSEVERATION_LIMIT = 3
+/**
+ * A second, looser tripwire for the "fishing expedition" variant: the model
+ * varies the command each time (so the identical-repeat check never fires) but
+ * every attempt fails — observed as 20+ distinct failing `pm etl read`
+ * guesses in one turn. A single successful call resets it, so a legitimate
+ * plan→fail→inspect→retry sequence is never cut off.
+ */
+export const FLAIL_LIMIT = 10
+
+/**
+ * Volatile identifiers (plan ids, approval tokens) change on every attempt, so
+ * a plan→run→fail loop never produces two byte-identical commands. Normalizing
+ * them out lets the guard see "the same run keeps failing" through the noise —
+ * observed as an alternating plan-ok / run-fail loop that burned a full turn.
+ */
+function normalizeGuardKey(key: string): string {
+  return key
+    .replace(/rplan_[a-f0-9]+/g, "rplan_X")
+    .replace(/[a-f0-9]{24,}/g, "HEX")
+}
+
+export function createPerseverationGuard(
+  limit = PERSEVERATION_LIMIT,
+  flailLimit = FLAIL_LIMIT
+) {
+  const keys = new Map<string, string>()
+  // Per-command failure counts. A success of the *same* command clears its
+  // count; successes of other commands do not — otherwise an interleaved
+  // succeeding step (re-planning before every doomed run) resets the guard
+  // and the loop runs to the turn timeout anyway.
+  const failsByKey = new Map<string, number>()
+  let anyFailStreak = 0
+  return {
+    start(id: string, tool: string, args: Record<string, unknown> | undefined) {
+      keys.set(id, normalizeGuardKey(`${tool} ${JSON.stringify(args ?? {})}`))
+    },
+    /** Returns the abort reason when the turn should be aborted, else null. */
+    end(id: string, isError: boolean): "repeat" | "flail" | null {
+      const key = keys.get(id)
+      keys.delete(id)
+      if (!key) return null
+      if (!isError) {
+        failsByKey.delete(key)
+        anyFailStreak = 0
+        return null
+      }
+      anyFailStreak += 1
+      const count = (failsByKey.get(key) ?? 0) + 1
+      failsByKey.set(key, count)
+      if (count >= limit) return "repeat"
+      if (anyFailStreak >= flailLimit) return "flail"
+      return null
+    },
+  }
+}
+
 export function writeSystemPrompt(session: SessionRecord, agent: AgentRecord) {
   mkdirSync(session.workdir, { recursive: true })
   const parts = [agent.systemPrompt.trim()]
@@ -106,6 +172,11 @@ export async function runTurn(
 ): Promise<TurnResult> {
   writeSystemPrompt(session, agent)
 
+  // The pm project dir, not /workspace: a small model reaches for relative
+  // paths (`cat .polymetrics/...`, bare `pm` commands), and every one of them
+  // must land in the project. Pi still picks up /workspace/.pi via
+  // PI_CODING_AGENT_DIR, so APPEND_SYSTEM.md and skills are unaffected —
+  // smoke.sh's injection check runs pi from this cwd and passes.
   const proc = spawnInSession(session, [
     "pi",
     "-p",
@@ -126,19 +197,27 @@ export async function runTurn(
     "bash,read,write,ls",
     "--skill",
     "/workspace/skills",
+    // An explicit --append-system-prompt OVERRIDES Pi's discovery of
+    // .pi/APPEND_SYSTEM.md, so the memory protocol must be passed here too —
+    // protocol first, then the agent's own prompt. Dropping the first flag
+    // silently disables memory for every turn that goes through this runner.
+    "--append-system-prompt",
+    "/workspace/.pi/APPEND_SYSTEM.md",
     "--append-system-prompt",
     "/workspace/system-prompt.md",
     userText,
-  ])
+  ], "/workspace/project")
 
   const timer = setTimeout(() => proc.kill(), env.turnTimeoutMs)
 
   const steps = new Map<string, AgentStep>()
   const startedAt = new Map<string, number>()
+  const guard = createPerseverationGuard()
   let streamed = ""
   let finalText = ""
   let costUsd: number | undefined
   let providerError: string | undefined
+  let abortError: string | undefined
 
   try {
     const decoder = new TextDecoder()
@@ -170,6 +249,7 @@ export async function runTurn(
             }
             steps.set(id, step)
             startedAt.set(id, Date.now())
+            guard.start(id, step.tool, event.args)
             onStep(step)
             break
           }
@@ -185,6 +265,16 @@ export async function runTurn(
             }
             steps.set(id, done)
             onStep(done)
+            const abortReason = guard.end(id, Boolean(event.isError))
+            if (abortReason) {
+              abortError =
+                abortReason === "repeat"
+                  ? `agent repeated a failing command ${PERSEVERATION_LIMIT} times ` +
+                    `("${existing.label.slice(0, 80)}") — aborted to avoid a silent timeout`
+                  : `agent made ${FLAIL_LIMIT} consecutive failing tool calls ` +
+                    `(last: "${existing.label.slice(0, 80)}") — aborted to avoid a silent timeout`
+              proc.kill()
+            }
             break
           }
           case "message_update": {
@@ -244,12 +334,18 @@ export async function runTurn(
         text: "",
         steps: [...steps.values()],
         error:
+          abortError ||
           providerError ||
           stderr.trim().slice(0, 800) ||
           `pi produced no reply (exit ${code})`,
       }
     }
-    return { text, steps: [...steps.values()], costUsd, error: providerError }
+    return {
+      text,
+      steps: [...steps.values()],
+      costUsd,
+      error: abortError || providerError,
+    }
   } finally {
     clearTimeout(timer)
   }

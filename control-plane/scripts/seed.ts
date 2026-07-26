@@ -36,7 +36,10 @@ const config = process.env.HMS_CONFIG
     ? { path: "$WORKSPACE/project/.polymetrics/outbox" }
     : {}
 
-const GOAL = `Take a new patient through intake, end to end:
+// The goal is configuration like everything else. AGENT_GOAL lets a test (or a
+// different vertical) swap the objective without touching code — the healthcare
+// text below is only the default demo.
+const GOAL = process.env.AGENT_GOAL ?? `Take a new patient through intake, end to end:
 
 1. Greet them warmly and say you'll help them get an appointment.
 2. Collect, one question at a time: full name, age, sex, and contact number.
@@ -100,6 +103,14 @@ const systemPrompt = [
   `\`${slug}\` connector (connection \`${connectionName}\`). Read the \`pm-workflow\``,
   "skill before your first write, and run `pm connectors inspect` before you use a",
   "connector — never guess a field or action name.",
+  "",
+  `Connector names in skill examples (like \`outbox\`) are placeholders — the only`,
+  `connector you may use is \`${slug}\`, via connection \`${connectionName}\`.`,
+  "Your shell starts in the pm project directory: run `pm` commands directly, and",
+  "inspect state with `pm` commands rather than reading project internals with `cat`.",
+  "Credential environment variables are already set in your environment. Never",
+  "`export`, set, or invent a credential value — that overrides the real one and",
+  "breaks authentication. Run `pm` commands without touching credentials at all.",
   "",
   GUARDRAILS,
 ].join("\n")
