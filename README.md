@@ -1,9 +1,15 @@
 # WhatsApp Agent Platform
 
-Create any number of agents. Each is a system prompt plus a set of Polymetrics
-`pm` connectors, fronted by its own WhatsApp number. Messages arrive as text or
-voice, Sarvam transcribes them, and a **Pi agent running in a per-session Docker
-sandbox** drives `pm` over bash to read and write the customer's systems.
+Two things are configured independently:
+
+- An **agent** is a system prompt plus a set of Polymetrics `pm` connectors. It
+  has no number and no channel of its own.
+- A **channel** is somewhere people message you — a WhatsApp number. It owns its
+  conversations and points them at an agent.
+
+Messages arrive as text or voice, Sarvam transcribes them, and a **Pi agent
+running in a per-session Docker sandbox** drives `pm` over bash to read and write
+the customer's systems.
 
 The hero flow is patient intake: a patient WhatsApps the number, converses in
 Hindi/English/Tamil by voice or text, and the agent collects their details,
@@ -11,13 +17,34 @@ works out which specialty they need, writes the record, books the appointment,
 and confirms it back. **That agent is one row in a table** — nothing in the
 backend knows about healthcare.
 
+## Channels, sessions, agents
+
+```
+Channel (a WhatsApp number)
+├── default agent ─────────────► Agent (prompt + connectors)
+└── Session (one peer)  ┐
+    Session (one peer)  ├─ follows the channel default…
+    Session (one peer) ─┘  …unless pinned to a different agent
+```
+
+Every new number that writes in becomes a **session** on that channel, handed to
+the channel's default agent. Change the default and every unpinned session moves
+with it, including ones already in progress. Assign an agent to a single session
+in the control plane and it is *pinned*: it keeps that agent no matter what the
+default does. That is how one number serves triage by default and routes a
+specific caller to billing.
+
+Reassigning a session keeps its workspace and its conversation history — only the
+prompt and the connector credentials change. The **Playground** is a built-in
+channel, so the in-app chat and `try-turn` take the identical path as WhatsApp.
+
 ## Models
 
 | Job | Model |
 |---|---|
 | Agent | `sarvam-105b` (128K ctx, OpenAI-compatible, tool calling) |
 | Speech → text | `saaras:v3` (takes WhatsApp ogg/opus directly; 30s cap per request) |
-| Text → speech | `bulbul:v3` (emits opus, so no transcode on the way out) |
+| Text → speech | `bulbul:v3` (emits opus at 48 kHz — it rejects its own default rate) |
 
 ## Layout
 
@@ -38,7 +65,7 @@ cp .env.example .env          # add SARVAM_API_KEY from dashboard.sarvam.ai
 ./sandbox/build.sh            # builds pi + pm into sarvam-sandbox:latest (few min)
 ./sandbox/smoke.sh            # verifies the image and the full pm write path
 
-cd control-plane && bun install && bun run seed   # creates the patient-intake agent
+cd control-plane && bun install && bun run seed   # patient-intake agent + a WhatsApp channel
 ```
 
 ## Run
@@ -58,25 +85,30 @@ Drive one turn without a browser or WhatsApp:
 cd control-plane && bun run try-turn patient-intake "hi, I need to see a doctor"
 ```
 
-Connect a real number: open the agent → **Channel** → *Connect WhatsApp* → scan
-the QR with WhatsApp → Settings → Linked devices. Use a spare number; Baileys is
-an unofficial client and WhatsApp can suspend numbers that automate.
+Connect a real number: **Channels** → pick the channel → **Pairing** → *Connect
+WhatsApp* → scan the QR with WhatsApp → Settings → Linked devices. Use a spare
+number; Baileys is an unofficial client and WhatsApp can suspend numbers that
+automate. Pairing survives a restart — the credentials live in
+`data/wa/<channelId>/`, and a channel that was connected reconnects at boot.
 
 ## How a turn works
 
 ```
-WhatsApp ─► receive ─► download ─► stt (Saaras v3) ─► sandbox ─► agent (Pi + Sarvam-105B)
-                                                                   │ bash: pm …
-                                                        tts (Bulbul v3) ─► send
+Channel ─► receive ─► download ─► stt (Saaras v3) ─► sandbox ─► agent (Pi + Sarvam-105B)
+             │                                                     │ bash: pm …
+    resolve session + agent                             tts (Bulbul v3) ─► send
 ```
 
-The playground and WhatsApp go through the **same** `runPipeline` — a playground
-that diverges from production is worse than none. Voice-only stages are marked
-skipped for text messages. The `agent` stage nests every Pi tool call, so the
-trace shows the actual `pm reverse plan` / `run --approve` commands as they run.
+Routing happens before the pipeline runs: `channel.ts` turns a peer into a
+session, `resolveAgentId` turns the session into an agent, and `runPipeline`
+receives all three. The playground and WhatsApp go through the **same**
+`runPipeline` — a playground that diverges from production is worse than none.
+Voice-only stages are marked skipped for text messages. The `agent` stage nests
+every Pi tool call, so the trace shows the actual `pm reverse plan` /
+`run --approve` commands as they run.
 
-Session identity is `(agentId, peerJid)`: one patient thread = one session = one
-container = one Pi session JSONL. Containers idle >15 min are reaped; the
+Session identity is `(channelId, peerJid)`: one patient thread = one session =
+one container = one Pi session JSONL. Containers idle >15 min are reaped; the
 workspace survives, so the next message resumes the conversation.
 
 ## How agents reach external systems

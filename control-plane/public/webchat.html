@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent web chat — validation</title>
+    <style>
+      :root {
+        --bg: #0d1117;
+        --panel: #161b22;
+        --line: #272e38;
+        --text: #e6edf3;
+        --dim: #8b949e;
+        --accent: #2f81f7;
+        --ok: #3fb950;
+        --warn: #d29922;
+        --err: #f85149;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--panel);
+        flex: none;
+      }
+      header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      select, button, input {
+        font: inherit;
+        color: var(--text);
+        background: #21262d;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 10px;
+      }
+      button { cursor: pointer; }
+      button:hover:not(:disabled) { border-color: var(--accent); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .spacer { flex: 1; }
+      .badge {
+        font-size: 12px;
+        padding: 3px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--line);
+        color: var(--dim);
+        white-space: nowrap;
+      }
+      .badge.ok { color: var(--ok); border-color: #1c6b2c; }
+      .badge.bad { color: var(--err); border-color: #6b1c1c; }
+
+      main { flex: 1; display: flex; min-height: 0; }
+      #chat, #trace { display: flex; flex-direction: column; min-height: 0; }
+      #chat { flex: 1 1 60%; border-right: 1px solid var(--line); }
+      #trace { flex: 1 1 40%; max-width: 520px; background: #0b0f14; }
+
+      .scroll { flex: 1; overflow-y: auto; padding: 16px; }
+      .section-title {
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--line);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--dim);
+        flex: none;
+      }
+
+      .msg { margin-bottom: 14px; display: flex; }
+      .msg.user { justify-content: flex-end; }
+      .bubble {
+        max-width: 80%;
+        padding: 8px 12px;
+        border-radius: 12px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .msg.user .bubble { background: #1f6feb; border-bottom-right-radius: 3px; }
+      .msg.agent .bubble { background: #21262d; border-bottom-left-radius: 3px; }
+      /* An empty reply used to be delivered as silence; make it impossible to miss. */
+      .bubble.empty { border: 1px dashed var(--err); color: var(--err); font-style: italic; }
+      .meta { font-size: 11px; color: var(--dim); margin-top: 4px; }
+      audio { display: block; margin-top: 6px; height: 32px; max-width: 260px; }
+
+      footer {
+        flex: none;
+        display: flex;
+        gap: 8px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--line);
+        background: var(--panel);
+      }
+      #text { flex: 1; }
+      #mic.recording { background: var(--err); border-color: var(--err); }
+
+      .stage { margin-bottom: 6px; font-size: 13px; }
+      .stage .row { display: flex; gap: 8px; align-items: baseline; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #30363d; flex: none; }
+      .dot.running { background: var(--warn); animation: pulse 1s infinite; }
+      .dot.done { background: var(--ok); }
+      .dot.error { background: var(--err); }
+      .dot.skipped { background: #30363d; opacity: 0.4; }
+      @keyframes pulse { 50% { opacity: 0.3; } }
+      .stage.skipped { opacity: 0.4; }
+      .stage .detail {
+        font-family: var(--mono);
+        font-size: 11px;
+        color: var(--dim);
+        margin: 2px 0 0 16px;
+        white-space: pre-wrap;
+        word-break: break-word;
+      }
+      .steps { margin: 4px 0 0 16px; border-left: 1px solid var(--line); padding-left: 10px; }
+      .step { font-family: var(--mono); font-size: 11px; margin-bottom: 4px; }
+      .step .cmd { color: var(--text); word-break: break-all; }
+      .step.error .cmd { color: var(--err); }
+      .step .out {
+        color: var(--dim);
+        max-height: 90px;
+        overflow: auto;
+        white-space: pre-wrap;
+        margin-top: 2px;
+      }
+      .err-banner {
+        margin: 0 16px 12px;
+        padding: 8px 12px;
+        border: 1px solid #6b1c1c;
+        background: #2a1214;
+        color: var(--err);
+        border-radius: 6px;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      .hint { color: var(--dim); font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Agent web chat</h1>
+      <select id="agent"></select>
+      <button id="reset" title="Start a brand-new session (fresh container workspace)">
+        New session
+      </button>
+      <span class="badge" id="peer"></span>
+      <span class="spacer"></span>
+      <span class="badge" id="health">checking…</span>
+    </header>
+
+    <main>
+      <section id="chat">
+        <div class="scroll" id="messages"></div>
+        <div id="error-slot"></div>
+        <footer>
+          <input id="text" placeholder="Type a message…" autocomplete="off" />
+          <button id="mic" title="Record a voice note (validates Saaras STT + Bulbul TTS)">
+            🎙
+          </button>
+          <button id="send">Send</button>
+        </footer>
+      </section>
+
+      <section id="trace">
+        <div class="section-title">Pipeline trace</div>
+        <div class="scroll" id="stages">
+          <p class="hint">Send a message to see the pipeline run.</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module">
+      const $ = (id) => document.getElementById(id)
+      const messagesEl = $("messages")
+      const stagesEl = $("stages")
+      const errorSlot = $("error-slot")
+
+      let agentId = null
+      let peer = sessionStorage.getItem("peer") || "webchat"
+      let source = null
+      let busy = false
+      const messages = new Map()
+
+      $("peer").textContent = `session: ${peer}`
+
+      // ── health ────────────────────────────────────────────────────────────
+      // Surfaces the two things that silently break everything: no API key, no
+      // Docker. Both produce a failed run that is otherwise hard to diagnose.
+      fetch("/api/health")
+        .then((r) => r.json())
+        .then((h) => {
+          const bad = []
+          if (!h.sarvamKey) bad.push("no SARVAM_API_KEY")
+          if (!h.docker) bad.push("docker unreachable")
+          const el = $("health")
+          el.textContent = bad.length ? bad.join(" · ") : `${h.model} · docker ok`
+          el.className = "badge " + (bad.length ? "bad" : "ok")
+        })
+        .catch(() => {
+          $("health").textContent = "backend unreachable"
+          $("health").className = "badge bad"
+        })
+
+      // ── agents ────────────────────────────────────────────────────────────
+      const agents = await fetch("/api/agents").then((r) => r.json())
+      const select = $("agent")
+      if (!agents.length) {
+        select.innerHTML = "<option>no agents — run: bun run seed</option>"
+        select.disabled = true
+      } else {
+        select.innerHTML = agents
+          .map((a) => `<option value="${a.id}">${a.name}</option>`)
+          .join("")
+        selectAgent(agents[0].id)
+      }
+      select.onchange = () => selectAgent(select.value)
+
+      function selectAgent(id) {
+        agentId = id
+        messages.clear()
+        messagesEl.innerHTML = ""
+        stagesEl.innerHTML = '<p class="hint">Send a message to see the pipeline run.</p>'
+        loadHistory()
+        subscribe()
+      }
+
+      $("reset").onclick = () => {
+        peer = `webchat-${Date.now().toString(36)}`
+        sessionStorage.setItem("peer", peer)
+        $("peer").textContent = `session: ${peer}`
+        selectAgent(agentId)
+      }
+
+      // ── history + live stream ─────────────────────────────────────────────
+      async function loadHistory() {
+        const history = await fetch(
+          `/api/agents/${agentId}/messages?peer=${encodeURIComponent(peer)}`
+        )
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => [])
+        for (const m of history) upsertMessage(m)
+      }
+
+      function subscribe() {
+        source?.close()
+        source = new EventSource(`/api/agents/${agentId}/events`)
+        source.onmessage = (raw) => {
+          let ev
+          try {
+            ev = JSON.parse(raw.data)
+          } catch {
+            return
+          }
+          handle(ev)
+        }
+      }
+
+      function handle(ev) {
+        switch (ev.type) {
+          case "run_start":
+            errorSlot.innerHTML = ""
+            renderStages(ev.run.stages)
+            setBusy(true)
+            break
+          case "stage":
+            patchStage(ev.stage)
+            break
+          case "step":
+            patchStep(ev.step)
+            break
+          case "message":
+            upsertMessage(ev.message)
+            break
+          case "message_patch":
+            {
+              const existing = messages.get(ev.id)
+              if (existing) upsertMessage({ ...existing, ...ev.patch })
+            }
+            break
+          case "run_end":
+            setBusy(false)
+            break
+          case "error":
+            errorSlot.innerHTML = `<div class="err-banner">${escapeHtml(ev.message)}</div>`
+            setBusy(false)
+            break
+        }
+      }
+
+      function setBusy(value) {
+        busy = value
+        $("send").disabled = value
+        $("text").disabled = value
+      }
+
+      // ── rendering ─────────────────────────────────────────────────────────
+      function escapeHtml(s) {
+        return String(s ?? "").replace(
+          /[&<>"']/g,
+          (c) =>
+            ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+        )
+      }
+
+      function upsertMessage(m) {
+        messages.set(m.id, m)
+        let el = document.getElementById(`m${m.id}`)
+        if (!el) {
+          el = document.createElement("div")
+          el.id = `m${m.id}`
+          messagesEl.appendChild(el)
+        }
+        // Voice messages show the transcript once STT lands; until then the
+        // bubble is intentionally a placeholder rather than empty.
+        const body = m.transcript || m.text
+        const isEmpty = !body?.trim()
+        const placeholder = m.kind === "voice" ? "🎙 voice note — transcribing…" : "(empty reply)"
+        const audio = m.audioUrl
+
+        el.className = `msg ${m.role}`
+        el.innerHTML =
+          `<div>` +
+          `<div class="bubble${isEmpty && m.role === "agent" ? " empty" : ""}">` +
+          escapeHtml(isEmpty ? placeholder : body) +
+          `</div>` +
+          (m.kind === "voice" && body ? `<div class="meta">🎙 transcribed</div>` : "") +
+          (audio ? `<audio controls src="${audio}"></audio>` : "") +
+          `</div>`
+        messagesEl.scrollTop = messagesEl.scrollHeight
+      }
+
+      function renderStages(stages) {
+        stagesEl.innerHTML = ""
+        for (const s of stages) {
+          const el = document.createElement("div")
+          el.id = `s-${s.id}`
+          stagesEl.appendChild(el)
+          patchStage(s)
+        }
+      }
+
+      function patchStage(s) {
+        const el = document.getElementById(`s-${s.id}`)
+        if (!el) return
+        el.className = `stage ${s.status}`
+        const steps = el.querySelector(".steps")?.outerHTML ?? ""
+        el.innerHTML =
+          `<div class="row"><span class="dot ${s.status}"></span>` +
+          `<span>${escapeHtml(s.label)}</span>` +
+          `<span class="hint">${s.ms ? s.ms + "ms" : ""}</span></div>` +
+          (s.detail ? `<div class="detail">${escapeHtml(s.detail)}</div>` : "") +
+          steps
+        stagesEl.scrollTop = stagesEl.scrollHeight
+      }
+
+      // Tool calls nest under the `agent` stage, so the trace shows the literal
+      // `pm reverse run … --approve …` commands as the agent runs them.
+      function patchStep(step) {
+        const stage = document.getElementById("s-agent")
+        if (!stage) return
+        let list = stage.querySelector(".steps")
+        if (!list) {
+          list = document.createElement("div")
+          list.className = "steps"
+          stage.appendChild(list)
+        }
+        let el = document.getElementById(`step-${step.id}`)
+        if (!el) {
+          el = document.createElement("div")
+          el.id = `step-${step.id}`
+          list.appendChild(el)
+        }
+        const icon = step.status === "running" ? "▶" : step.status === "error" ? "✗" : "✓"
+        el.className = `step ${step.status}`
+        el.innerHTML =
+          `<div class="cmd">${icon} ${escapeHtml(step.label)}</div>` +
+          (step.detail ? `<div class="out">${escapeHtml(step.detail)}</div>` : "")
+        stagesEl.scrollTop = stagesEl.scrollHeight
+      }
+
+      // ── sending ───────────────────────────────────────────────────────────
+      async function sendText() {
+        const input = $("text")
+        const text = input.value.trim()
+        if (!text || busy || !agentId) return
+        input.value = ""
+        setBusy(true)
+        const res = await fetch(
+          `/api/agents/${agentId}/messages?peer=${encodeURIComponent(peer)}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ text }),
+          }
+        ).catch((e) => ({ ok: false, statusText: String(e) }))
+        if (!res.ok) {
+          errorSlot.innerHTML = `<div class="err-banner">send failed: ${escapeHtml(res.statusText)}</div>`
+          setBusy(false)
+        }
+      }
+
+      $("send").onclick = sendText
+      $("text").onkeydown = (e) => {
+        if (e.key === "Enter") sendText()
+      }
+
+      // ── voice ─────────────────────────────────────────────────────────────
+      // Exercises the two voice-only legs (Saaras STT in, Bulbul TTS out) that
+      // a text-only chat would leave untested.
+      let recorder = null
+      let chunks = []
+      let startedAt = 0
+
+      $("mic").onclick = async () => {
+        if (recorder?.state === "recording") {
+          recorder.stop()
+          return
+        }
+        if (busy) return
+        let stream
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        } catch (e) {
+          errorSlot.innerHTML = `<div class="err-banner">microphone denied: ${escapeHtml(e.message)}</div>`
+          return
+        }
+        // Chrome yields webm/opus, Safari mp4 — Saaras accepts both, so record
+        // in whatever the browser offers rather than forcing a container.
+        recorder = new MediaRecorder(stream)
+        chunks = []
+        startedAt = Date.now()
+        recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data)
+        recorder.onstop = async () => {
+          stream.getTracks().forEach((t) => t.stop())
+          $("mic").classList.remove("recording")
+          const blob = new Blob(chunks, { type: recorder.mimeType })
+          if (!blob.size) return
+          setBusy(true)
+          const form = new FormData()
+          form.append("audio", blob, "note.webm")
+          form.append("seconds", String(Math.round((Date.now() - startedAt) / 1000)))
+          await fetch(
+            `/api/agents/${agentId}/messages?peer=${encodeURIComponent(peer)}`,
+            { method: "POST", body: form }
+          ).catch((e) => {
+            errorSlot.innerHTML = `<div class="err-banner">${escapeHtml(String(e))}</div>`
+            setBusy(false)
+          })
+        }
+        recorder.start()
+        $("mic").classList.add("recording")
+      }
+    </script>
+  </body>
+</html>
