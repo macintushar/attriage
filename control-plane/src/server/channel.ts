@@ -17,7 +17,7 @@ import {
   ensureSessionRow,
   getAgent,
   getChannel,
-  listChannels,
+  listAllChannelsForReconnect,
   updateChannel,
 } from "./db"
 import { channelBus } from "./events"
@@ -27,6 +27,7 @@ import { resolveAgentId } from "./routing"
 import type { ChannelRecord, ChannelStatus, SessionRecord } from "./types"
 
 interface Connection {
+  organizationId: string
   channelId: string
   adapter: BaileysAdapter
   bot: Chat
@@ -41,14 +42,15 @@ const connections =
   globals[CONNECTIONS_KEY] ??
   (globals[CONNECTIONS_KEY] = new Map<string, Connection>())
 
-function setStatus(
+async function setStatus(
+  organizationId: string,
   channelId: string,
   status: ChannelStatus,
   extra: { phone?: string; error?: string } = {}
 ) {
   const conn = connections.get(channelId)
   if (conn) conn.status = status
-  updateChannel(channelId, {
+  await updateChannel(organizationId, channelId, {
     status,
     // Keep the last known number while reconnecting — the UI showing the paired
     // number is how you tell a blip apart from a logout.
@@ -62,9 +64,7 @@ export function channelStatus(channelId: string): ChannelStatus {
   const conn = connections.get(channelId)
   if (conn) return conn.status
   // The playground is always up: it is the control plane itself.
-  return getChannel(channelId)?.kind === "playground"
-    ? "connected"
-    : "disconnected"
+  return channelId.startsWith("playground-") ? "connected" : "disconnected"
 }
 
 /**
@@ -73,11 +73,16 @@ export function channelStatus(channelId: string): ChannelStatus {
  * A peer that has never written in gets a session on the channel's default
  * agent; one that the control plane has pinned keeps the agent it was pinned to.
  */
-export function routeInbound(
+export async function routeInbound(
   channel: ChannelRecord,
   peerJid: string
-): { session: SessionRecord; agentId: string | null; created: boolean } {
-  const { session, created } = ensureSessionRow(
+): Promise<{
+  session: SessionRecord
+  agentId: string | null
+  created: boolean
+}> {
+  const { session, created } = await ensureSessionRow(
+    channel.organizationId,
     channel.id,
     peerJid,
     channel.defaultAgentId
@@ -91,10 +96,13 @@ export function routeInbound(
  * Multi-tenancy is native to the adapter: a distinct `adapterName` and auth
  * directory per channel means one process can front many numbers.
  */
-export async function connectChannel(channelId: string): Promise<void> {
+export async function connectChannel(
+  organizationId: string,
+  channelId: string
+): Promise<void> {
   if (connections.has(channelId)) return
 
-  const channel = getChannel(channelId)
+  const channel = await getChannel(organizationId, channelId)
   if (!channel) throw new Error(`unknown channel ${channelId}`)
   if (channel.kind !== "whatsapp") {
     throw new Error(`${channel.kind} channels cannot be paired yet`)
@@ -109,7 +117,7 @@ export async function connectChannel(channelId: string): Promise<void> {
     auth: { state, saveCreds },
     userName: channel.name,
     onQR: async (qr) => {
-      setStatus(channelId, "pairing")
+      await setStatus(organizationId, channelId, "pairing")
       channelBus.emit(channelId, {
         type: "qr",
         dataUrl: await QRCode.toDataURL(qr),
@@ -122,14 +130,14 @@ export async function connectChannel(channelId: string): Promise<void> {
     if (connections.get(channelId)?.adapter !== adapter) return
 
     if (update.connection === "open") {
-      setStatus(channelId, "connected", {
+      void setStatus(organizationId, channelId, "connected", {
         phone: phoneFromWhatsAppJid(adapter.botUserId),
       })
       return
     }
 
     if (update.connection === "connecting") {
-      setStatus(channelId, "pairing")
+      void setStatus(organizationId, channelId, "pairing")
       return
     }
 
@@ -137,13 +145,13 @@ export async function connectChannel(channelId: string): Promise<void> {
       const code = disconnectStatusCode(update.lastDisconnect?.error)
       if (code === DisconnectReason.loggedOut) {
         connections.delete(channelId)
-        setStatus(channelId, "disconnected", {
+        void setStatus(organizationId, channelId, "disconnected", {
           error: "WhatsApp logged out. Connect again to pair this number.",
         })
       } else {
         // The adapter reconnects automatically, including the expected restart
         // immediately after a successful QR scan.
-        setStatus(channelId, "pairing")
+        void setStatus(organizationId, channelId, "pairing")
       }
     }
   })
@@ -161,11 +169,11 @@ export async function connectChannel(channelId: string): Promise<void> {
 
     // Re-read the channel every message: its default agent can change between
     // one message and the next, and that change should take effect immediately.
-    const current = getChannel(channelId)
+    const current = await getChannel(organizationId, channelId)
     if (!current) return
 
     const peerJid = thread.id
-    const { session, agentId, created } = routeInbound(current, peerJid)
+    const { session, agentId, created } = await routeInbound(current, peerJid)
     if (created) {
       channelBus.emit(channelId, {
         type: "session",
@@ -175,7 +183,7 @@ export async function connectChannel(channelId: string): Promise<void> {
       })
     }
 
-    const agent = agentId ? getAgent(agentId) : null
+    const agent = agentId ? await getAgent(organizationId, agentId) : null
     if (!agent) {
       // Staying silent beats improvising: this number has no agent configured,
       // and a stranger should not get a machine-generated apology either.
@@ -242,8 +250,14 @@ export async function connectChannel(channelId: string): Promise<void> {
     }
   })
 
-  connections.set(channelId, { channelId, adapter, bot, status: "pairing" })
-  setStatus(channelId, "pairing")
+  connections.set(channelId, {
+    organizationId,
+    channelId,
+    adapter,
+    bot,
+    status: "pairing",
+  })
+  await setStatus(organizationId, channelId, "pairing")
 
   await bot.initialize()
   try {
@@ -251,7 +265,9 @@ export async function connectChannel(channelId: string): Promise<void> {
   } catch (error) {
     connections.delete(channelId)
     const detail = error instanceof Error ? error.message : String(error)
-    setStatus(channelId, "disconnected", { error: detail })
+    await setStatus(organizationId, channelId, "disconnected", {
+      error: detail,
+    })
     throw error
   }
 }
@@ -261,7 +277,7 @@ export async function disconnectChannel(channelId: string): Promise<void> {
   if (!conn) return
   connections.delete(channelId)
   await conn.adapter.disconnect().catch(() => {})
-  setStatus(channelId, "disconnected")
+  await setStatus(conn.organizationId, channelId, "disconnected")
 }
 
 /**
@@ -271,13 +287,13 @@ export async function disconnectChannel(channelId: string): Promise<void> {
  * was connected when the process stopped can resume without another QR scan —
  * which matters when the alternative is re-pairing a number on stage.
  */
-export function reconnectPairedChannels() {
+export async function reconnectPairedChannels() {
   if (!env.autoReconnectChannels) return
-  for (const channel of listChannels()) {
+  for (const channel of await listAllChannelsForReconnect()) {
     if (channel.kind !== "whatsapp") continue
     if (channel.status === "disconnected") continue
     if (!existsSync(`${paths.waAuth(channel.id)}/creds.json`)) continue
-    connectChannel(channel.id).catch((error) => {
+    connectChannel(channel.organizationId, channel.id).catch((error) => {
       const detail = error instanceof Error ? error.message : String(error)
       console.warn(`[${channel.id}] could not resume: ${detail}`)
     })

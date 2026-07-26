@@ -88,7 +88,11 @@ export interface RunStreamUrls {
  * session's page (`session:<id>`), because both are watching the same pipeline
  * from different angles.
  */
-export function useRunStream({ events, messages: messagesUrl, history }: RunStreamUrls) {
+export function useRunStream({
+  events,
+  messages: messagesUrl,
+  history,
+}: RunStreamUrls) {
   const [messages, setMessages] = useState<ChatMessage[]>(history ?? [])
   const [run, setRun] = useState<PipelineRun | null>(null)
   const [isBusy, setBusy] = useState(false)
@@ -169,7 +173,9 @@ export function useRunStream({ events, messages: messagesUrl, history }: RunStre
 
         case "message_patch":
           setMessages((current) =>
-            current.map((m) => (m.id === event.id ? { ...m, ...event.patch } : m))
+            current.map((m) =>
+              m.id === event.id ? { ...m, ...event.patch } : m
+            )
           )
           break
 

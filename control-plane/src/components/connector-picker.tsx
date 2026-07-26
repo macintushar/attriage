@@ -72,9 +72,7 @@ export function ConnectorPicker({ selected, onToggle }: ConnectorPickerProps) {
               onClick={() => onToggle(c.slug)}
               className={cn(
                 "flex w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
-                isSelected
-                  ? "border-primary bg-primary/5"
-                  : "hover:bg-muted/50"
+                isSelected ? "border-primary bg-primary/5" : "hover:bg-muted/50"
               )}
             >
               <ConnectorAvatar slug={c.slug} name={c.name} />

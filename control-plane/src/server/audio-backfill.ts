@@ -14,7 +14,7 @@ import { messagesMissingAudioDuration, setMessageAudioSeconds } from "./db"
  * time, and reading files there would make importing the database do disk I/O.
  */
 export async function backfillAudioDurations(limit = 500): Promise<number> {
-  const pending = messagesMissingAudioDuration(limit)
+  const pending = await messagesMissingAudioDuration(limit)
   if (!pending.length) return 0
 
   let filled = 0
@@ -24,7 +24,7 @@ export async function backfillAudioDurations(limit = 500): Promise<number> {
       // A row we cannot measure is left alone rather than written as 0: on the
       // next boot the file may be readable, and 0:00 is what we are fixing.
       if (seconds === null || seconds <= 0) continue
-      setMessageAudioSeconds(message.id, Math.round(seconds))
+      await setMessageAudioSeconds(message.id, Math.round(seconds))
       filled++
     } catch {
       // Reaped workspace, deleted media, or a container that never wrote it.

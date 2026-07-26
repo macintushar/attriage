@@ -6,37 +6,42 @@
  *
  * Prints the live trace so you can see the agent's pm commands as they run.
  */
-import { ensureSessionRow, getAgent, getChannel, listAgents } from "../src/server/db"
+import {
+  ensurePlaygroundChannel,
+  ensureSessionRow,
+  getAgent,
+  listAgents,
+} from "../src/server/db"
 import { runBus, runTopic } from "../src/server/events"
 import { runPipeline } from "../src/server/pipeline"
-import { PLAYGROUND_CHANNEL_ID, playgroundPeer } from "../src/server/routing"
+import { playgroundPeer } from "../src/server/routing"
 import { stopReaper } from "../src/server/sandbox"
 import { startSarvamShim, stopSarvamShim } from "../src/server/sarvam-shim"
 
 const [agentId, ...rest] = process.argv.slice(2)
 const text = rest.join(" ")
 const source = process.env.AGENT_PEER ?? "cli"
+const organizationId = process.env.SEED_ORGANIZATION_ID
+if (!organizationId) {
+  throw new Error("SEED_ORGANIZATION_ID is required")
+}
 
 if (!agentId || !text) {
   console.error('usage: bun run try-turn <agentId> "message"')
   console.error(
     `known agents: ${
-      listAgents()
-        .map((a) => a.id)
-        .join(", ") || "(none)"
+      (await listAgents(organizationId)).map((a) => a.id).join(", ") || "(none)"
     }`
   )
   process.exit(2)
 }
 
-const agent = getAgent(agentId)
+const agent = await getAgent(organizationId, agentId)
 if (!agent) {
   console.error(`unknown agent: ${agentId}`)
   console.error(
     `known agents: ${
-      listAgents()
-        .map((a) => a.id)
-        .join(", ") || "(none)"
+      (await listAgents(organizationId)).map((a) => a.id).join(", ") || "(none)"
     }`
   )
   process.exit(2)
@@ -74,8 +79,9 @@ startSarvamShim()
 
 // The CLI drives the built-in playground channel, so it takes exactly the same
 // path as WhatsApp — session, sandbox, pipeline — with nothing to deliver to.
-const channel = getChannel(PLAYGROUND_CHANNEL_ID)!
-const { session } = ensureSessionRow(
+const channel = await ensurePlaygroundChannel(organizationId)
+const { session } = await ensureSessionRow(
+  organizationId,
   channel.id,
   playgroundPeer(agent.id, source),
   agent.id,

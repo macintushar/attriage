@@ -16,7 +16,15 @@ import {
   setConnectors,
   updateAgent,
   updateChannel,
+  ensurePlaygroundChannel,
 } from "../src/server/db"
+
+const organizationId = process.env.SEED_ORGANIZATION_ID
+if (!organizationId) {
+  throw new Error(
+    "SEED_ORGANIZATION_ID is required. Create an organization in the app, then run `SEED_ORGANIZATION_ID=<id> bun run seed`."
+  )
+}
 
 /**
  * Defaults to pm's built-in `outbox` connector, which records reverse-ETL
@@ -78,7 +86,7 @@ const GUARDRAILS = `## Clinical safety
   booking an appointment, hand off and summarise so they never repeat themselves.`
 
 const name = "Patient Intake"
-const existing = getAgent("patient-intake")
+const existing = await getAgent(organizationId, "patient-intake")
 
 const systemPrompt = [
   `You are **${name}**, the intake assistant for a hospital, talking to patients on WhatsApp.`,
@@ -105,7 +113,7 @@ const systemPrompt = [
 ].join("\n")
 
 const agent = existing
-  ? updateAgent("patient-intake", {
+  ? (await updateAgent(organizationId, "patient-intake", {
       name,
       goal: GOAL,
       systemPrompt,
@@ -113,8 +121,8 @@ const agent = existing
       language: "auto",
       ttsSpeaker: "shubh",
       tools: [slug],
-    })!
-  : createAgent({
+    }))!
+  : await createAgent(organizationId, {
       id: "patient-intake",
       name,
       voice: true,
@@ -125,7 +133,7 @@ const agent = existing
       ttsSpeaker: "shubh",
     })
 
-setConnectors(agent.id, [
+await setConnectors(organizationId, agent.id, [
   {
     agentId: agent.id,
     slug,
@@ -142,15 +150,19 @@ setConnectors(agent.id, [
 // conversation to its default agent. Re-seeding repoints it rather than making
 // a second channel, so a paired number is never orphaned.
 const CHANNEL_ID = process.env.WA_CHANNEL ?? "hospital-whatsapp"
-const channelExisted = Boolean(getChannel(CHANNEL_ID))
+const channelExisted = Boolean(await getChannel(organizationId, CHANNEL_ID))
 const channel = channelExisted
-  ? updateChannel(CHANNEL_ID, { defaultAgentId: agent.id })!
-  : createChannel({
+  ? (await updateChannel(organizationId, CHANNEL_ID, {
+      defaultAgentId: agent.id,
+    }))!
+  : await createChannel(organizationId, {
       id: CHANNEL_ID,
       name: "Hospital WhatsApp",
       kind: "whatsapp",
       defaultAgentId: agent.id,
     })
+
+await ensurePlaygroundChannel(organizationId)
 
 console.log(
   `${existing ? "updated" : "created"} agent "${agent.name}" (${agent.id})`

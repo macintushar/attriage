@@ -11,6 +11,7 @@ import { TanStackDevtools } from "@tanstack/react-devtools"
 import { IconSparkles } from "@tabler/icons-react"
 
 import { cn } from "@/lib/utils"
+import { authClient, signOut, useSession } from "@/lib/auth-client"
 import appCss from "../styles.css?url"
 
 export const Route = createRootRoute({
@@ -45,6 +46,16 @@ export const Route = createRootRoute({
 
 function TopNav() {
   const { pathname } = useLocation()
+  const session = useSession()
+  const [organizations, setOrganizations] = useState<
+    Array<{ id: string; name: string }>
+  >([])
+  useEffect(() => {
+    if (!session.data) return
+    void authClient.organization
+      .list()
+      .then(({ data }) => setOrganizations(data ?? []))
+  }, [session.data])
   const links = [
     {
       to: "/",
@@ -85,7 +96,44 @@ function TopNav() {
           </Link>
         ))}
       </div>
-      <RuntimeBadge />
+      <div className="ml-auto flex items-center gap-3">
+        <select
+          aria-label="Active organization"
+          value={session.data?.session.activeOrganizationId ?? ""}
+          onChange={async (event) => {
+            await authClient.organization.setActive({
+              organizationId: event.target.value,
+            })
+            window.location.assign("/")
+          }}
+          className="h-8 rounded-lg border bg-background px-2 text-sm"
+        >
+          {organizations.map((organization) => (
+            <option key={organization.id} value={organization.id}>
+              {organization.name}
+            </option>
+          ))}
+        </select>
+        <Link
+          to="/onboarding"
+          className="text-sm text-muted-foreground hover:text-foreground"
+        >
+          New organization
+        </Link>
+        <span className="hidden text-sm text-muted-foreground sm:inline">
+          {session.data?.user.name}
+        </span>
+        <button
+          className="text-sm text-muted-foreground hover:text-foreground"
+          onClick={async () => {
+            await signOut()
+            window.location.assign("/sign-in")
+          }}
+        >
+          Sign out
+        </button>
+        <RuntimeBadge />
+      </div>
     </nav>
   )
 }
@@ -153,16 +201,39 @@ function RuntimeBadge() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+  const { pathname } = useLocation()
+  const session = useSession()
+  const publicPage =
+    pathname === "/sign-in" ||
+    pathname === "/sign-up" ||
+    pathname === "/onboarding"
+
+  useEffect(() => {
+    if (session.isPending) return
+    if (!session.data && !publicPage) window.location.assign("/sign-in")
+    if (
+      session.data &&
+      !session.data.session.activeOrganizationId &&
+      !publicPage
+    ) {
+      window.location.assign("/onboarding")
+    }
+  }, [publicPage, session.data, session.isPending])
+
   return (
     <html lang="en">
       <head>
         <HeadContent />
       </head>
       <body suppressHydrationWarning>
-        <div className="flex h-svh flex-col">
-          <TopNav />
-          <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
-        </div>
+        {publicPage ? (
+          children
+        ) : (
+          <div className="flex h-svh flex-col">
+            <TopNav />
+            <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+          </div>
+        )}
         <TanStackDevtools
           config={{
             position: "bottom-right",

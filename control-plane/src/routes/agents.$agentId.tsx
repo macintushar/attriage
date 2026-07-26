@@ -11,11 +11,7 @@ import {
 import { cn } from "@/lib/utils"
 import { ChatPanel } from "@/components/chat-panel"
 import { TracePanel } from "@/components/trace-panel"
-import {
-  ChannelIcon,
-  Chip,
-  StatusDot,
-} from "@/components/channel-bits"
+import { ChannelIcon, Chip, StatusDot } from "@/components/channel-bits"
 import { useAgentRun } from "@/lib/agent-run"
 import { fetchAgent, updateAgent } from "@/lib/agents-store"
 import type { AgentConfig } from "@/lib/agents-store"
@@ -58,7 +54,9 @@ function AgentDetail() {
 }
 
 function Playground({ agent }: { agent: AgentConfig }) {
-  const { messages, run, isBusy, error, sendText, sendVoice } = useAgentRun(agent.id)
+  const { messages, run, isBusy, error, sendText, sendVoice } = useAgentRun(
+    agent.id
+  )
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
@@ -137,8 +135,8 @@ function ChannelsTab({ agent }: { agent: AgentConfig }) {
       <div className="rounded-2xl border border-dashed p-8 text-center">
         <p className="text-sm font-medium">Not connected to any channel</p>
         <p className="mx-auto mt-1 max-w-md text-xs text-muted-foreground">
-          This agent only runs in the playground. Add a channel and set it as the
-          default agent to put it in front of real people.
+          This agent only runs in the playground. Add a channel and set it as
+          the default agent to put it in front of real people.
         </p>
         <Link
           to="/channels/new"
@@ -211,7 +209,9 @@ const AgentHeader = memo(function AgentHeader({
           <IconArrowLeft className="size-4" />
           Agents
         </Link>
-        <h1 className="mt-1 font-heading text-lg font-semibold">{agent.name}</h1>
+        <h1 className="mt-1 font-heading text-lg font-semibold">
+          {agent.name}
+        </h1>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
           {live.map((channel) => (
             <Chip key={channel.id}>
@@ -245,4 +245,3 @@ const AgentHeader = memo(function AgentHeader({
     </header>
   )
 })
-
